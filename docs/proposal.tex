@@ -1,0 +1,457 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage{url}
+
+\title{Adaptive Staleness-Aware Gradient Compression for Asynchronous Distributed Training}
+
+\author{
+\IEEEauthorblockN{Your Name(s)}
+\IEEEauthorblockA{
+Department of Information Technology\\
+National Institute of Technology Karnataka, Surathkal\\
+Email: your.email@nitk.edu.in
+}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Distributed training reduces the time required to train machine learning models by allowing multiple workers to compute model updates in parallel. However, two practical problems limit its efficiency. First, workers must repeatedly transmit large gradient vectors, which creates high communication overhead. Second, workers often run at different speeds, and slow workers can delay training or return updates that were computed using older model parameters. Asynchronous training reduces waiting time because the parameter server does not need to wait for every worker, but it introduces gradient staleness that can reduce convergence stability.
+
+This proposal presents an Adaptive Staleness-Aware Gradient Compression Parameter Server for asynchronous distributed training. The system combines asynchronous updates, bounded staleness, Top-K sparsification or quantization, and error feedback. The parameter server measures the staleness of every received update and accepts, downweights, or rejects it according to adaptive thresholds. The system also changes compression strength and staleness limits during training based on loss behaviour, observed staleness, and communication conditions. The proposed framework will be evaluated using model quality, communication volume, wall-clock convergence time, throughput, stability, and tolerance to heterogeneous worker speeds. The expected result is a system that reduces communication cost and straggler impact while maintaining stable convergence.
+\end{abstract}
+
+\begin{IEEEkeywords}
+distributed machine learning, asynchronous SGD, gradient compression, staleness, parameter server, Top-K sparsification, quantization, error feedback
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\subsection{Problem and Problem Statement}
+
+Modern machine learning models often require large amounts of computation. Distributed training addresses this requirement by dividing training work across multiple workers. In data-parallel training, each worker processes a different mini-batch and computes gradients that update a shared model. A parameter server can coordinate these updates and maintain the global model \cite{li2014ps}.
+
+Two major problems reduce the efficiency of this approach. The first problem is communication overhead. Neural networks can contain millions of parameters, so workers may need to send large gradient vectors after every training step. When network bandwidth becomes the bottleneck, additional workers do not provide the expected speedup. Gradient compression addresses this issue by reducing the number of transmitted values or reducing their numerical precision \cite{alistarh2017qsgd,lin2018dgc}.
+
+The second problem is worker heterogeneity. Workers can differ in computation speed, hardware capability, network delay, and workload. Synchronous training waits for all participating workers before applying an update, so one slow worker can delay the entire iteration. Asynchronous stochastic gradient descent removes this barrier by allowing workers to send updates independently \cite{lian2015async}. However, a worker can compute its gradient using an older model version. This produces a stale gradient. Large or uncontrolled staleness can reduce training stability and slow convergence \cite{zhang2016staleness,dutta2018stale}.
+
+\textbf{Problem Statement:}
+There is a need for a distributed training framework that reduces gradient communication cost and avoids waiting for slow workers without allowing stale or heavily compressed updates to damage convergence. The framework should dynamically control both compression strength and update staleness according to current training and system conditions instead of relying only on fixed policies.
+
+\subsection{Background and Current State of Knowledge}
+
+Parameter-server architectures provide a practical structure for distributed machine learning by separating worker-side computation from centralized model coordination \cite{li2014ps}. Asynchronous SGD improves hardware utilization because workers do not wait at a synchronization barrier \cite{lian2015async}. Research on stale synchronous and staleness-aware training has shown that controlling delayed updates can balance system throughput and optimization quality \cite{ho2013ssp,zhang2016staleness}.
+
+A separate body of work studies communication-efficient optimization. QSGD reduces communication by quantizing gradients and provides a controllable tradeoff between communication cost and optimization variance \cite{alistarh2017qsgd}. Deep Gradient Compression uses aggressive sparsification with mechanisms that preserve training quality \cite{lin2018dgc}. Error feedback stores compression error and adds it to later updates, helping compressed optimization retain information that would otherwise be lost \cite{karimireddy2019ef}.
+
+Research has also shown that asynchronous computation and communication reduction can coexist. For example, asynchronous decentralized training has been studied together with quantized communication and local updates \cite{nadiradze2021async}. These results support the feasibility of combining relaxed synchronization with communication reduction.
+
+\subsection{Research Gap}
+
+Existing methods provide strong solutions for individual parts of the problem, but the proposed work focuses on a less explored system-level question: how should a centralized asynchronous training system jointly adapt gradient compression and staleness control while training is in progress?
+
+Fixed compression ratios do not react when the loss becomes unstable. Fixed staleness limits do not react when workers slow down, communication becomes congested, or the model enters a sensitive phase of optimization. A system that applies strong compression and permissive staleness at the wrong time can save communication but reduce convergence quality. A system that always uses weak compression and strict staleness can preserve accuracy but lose much of the performance benefit.
+
+This project addresses that gap by coupling the two controls. The parameter server observes training behaviour and system behaviour, then changes the compression ratio and staleness limits together. The goal is to use more aggressive settings when training remains stable and safer settings when instability appears.
+
+\subsection{Application, Motivation, and Beneficiaries}
+
+The proposed framework targets distributed machine learning environments in which workers have different computation or communication speeds. Typical use cases include university GPU clusters, shared research servers, cloud training environments, and edge or heterogeneous computing testbeds.
+
+The main motivation is to use available hardware more effectively. Instead of forcing fast workers to wait for slow workers, the system accepts asynchronous progress. Instead of transmitting complete high-precision gradients at every step, it compresses updates. At the same time, the adaptive controller protects training quality by monitoring whether these performance optimizations are becoming too aggressive.
+
+The main beneficiaries are:
+\begin{itemize}
+    \item researchers who train models on heterogeneous computing clusters,
+    \item organizations that want to reduce network traffic during distributed training,
+    \item users of shared GPU infrastructure where worker performance varies over time, and
+    \item developers studying communication-efficient and asynchronous optimization methods.
+\end{itemize}
+
+\subsection{Uniqueness and Novelty}
+
+The novelty of the proposed project lies in the joint adaptive control of two sources of training error and system overhead: gradient compression and gradient staleness.
+
+The proposed system combines:
+\begin{itemize}
+    \item asynchronous parameter-server training,
+    \item bounded staleness with accept, downweight, and reject decisions,
+    \item Top-K sparsification or gradient quantization,
+    \item error feedback for compression loss, and
+    \item an adaptive controller that changes compression strength and staleness thresholds using live training and system measurements.
+\end{itemize}
+
+The project does not treat compression and staleness as independent fixed hyperparameters. It treats them as connected control variables. This design lets the system trade communication cost, worker utilization, and convergence stability during training.
+
+\subsection{Evaluation Strategy}
+
+The proposed framework will be compared with several baselines:
+\begin{itemize}
+    \item synchronous SGD without compression,
+    \item asynchronous SGD without staleness control,
+    \item asynchronous SGD with a fixed staleness bound,
+    \item asynchronous SGD with fixed gradient compression, and
+    \item the proposed adaptive staleness-aware compression method.
+\end{itemize}
+
+The evaluation will measure final model quality, wall-clock time to reach a target accuracy, total bytes transmitted, compression ratio, updates processed per second, average and maximum staleness, rejected-update ratio, and loss stability. Controlled worker slowdowns and network delays will be introduced to evaluate straggler tolerance.
+
+\subsection{Expected Contributions}
+
+The project is expected to make the following contributions:
+\begin{enumerate}
+    \item A working asynchronous parameter-server framework that records the model version used for every worker update.
+    \item A staleness-aware update policy that accepts recent gradients, reduces the weight of moderately stale gradients, and rejects excessively stale gradients.
+    \item A communication-efficient gradient pipeline using Top-K sparsification or quantization with error feedback.
+    \item An adaptive controller that jointly adjusts compression strength and staleness limits using training and system signals.
+    \item An experimental comparison that quantifies the tradeoff between communication cost, straggler tolerance, convergence speed, and model quality.
+\end{enumerate}
+
+\section{Research Questions}
+
+This project will investigate the following research questions:
+
+\begin{enumerate}
+    \item How much communication can gradient compression save in asynchronous distributed training without significantly reducing final model quality?
+    \item How does gradient staleness affect convergence when workers operate at different speeds?
+    \item Does joint adaptive control of compression and staleness outperform fixed compression and fixed staleness policies in wall-clock convergence time?
+    \item How much does error feedback recover information lost through Top-K sparsification or quantization?
+    \item Which training and system signals provide useful feedback for deciding when to make compression and staleness policies more aggressive or more conservative?
+\end{enumerate}
+
+\section{Research Objectives}
+
+The main objective is to design and evaluate an adaptive parameter-server framework for communication-efficient asynchronous distributed training.
+
+The specific objectives are:
+\begin{enumerate}
+    \item implement asynchronous worker-to-server model updates,
+    \item measure the staleness of every received gradient,
+    \item implement Top-K sparsification and quantization,
+    \item integrate error feedback into compressed worker updates,
+    \item design adaptive rules for compression strength and staleness limits,
+    \item simulate heterogeneous workers and network delays, and
+    \item compare the proposed framework with fixed-policy baselines.
+\end{enumerate}
+
+\section{Literature Review}
+
+\subsection{Asynchronous Distributed Optimization}
+
+Asynchronous SGD allows workers to compute and send updates without waiting for a global synchronization barrier. Lian et al. studied asynchronous parallel stochastic gradient methods for non-convex optimization and established convergence and speedup results under suitable assumptions \cite{lian2015async}. However, asynchronous execution creates delayed updates because a worker can compute a gradient using an older version of the shared model.
+
+Zhang et al. proposed staleness-aware Async-SGD, where the effect of a gradient changes according to its staleness \cite{zhang2016staleness}. Ho et al. introduced the stale synchronous parallel model, which bounds how far workers can drift apart while allowing limited asynchronous progress \cite{ho2013ssp}. Dutta et al. studied the error-runtime tradeoff caused by stragglers and stale gradients, showing why practical distributed training needs to balance waiting time against update freshness \cite{dutta2018stale}. More recent analysis continues to study asynchronous SGD under heterogeneous worker speed and stale gradients \cite{islamov2024asgrad}.
+
+\subsection{Gradient Compression}
+
+Gradient compression reduces the volume of data exchanged during distributed optimization. QSGD uses quantization to trade communication cost against additional variance while retaining convergence guarantees under standard assumptions \cite{alistarh2017qsgd}. Deep Gradient Compression shows that large parts of gradient communication can be removed through sparsification when the training procedure includes suitable compensation mechanisms \cite{lin2018dgc}.
+
+Top-K sparsification transmits only the gradient entries with the largest magnitudes. Quantization instead represents gradient values using fewer levels or fewer bits. Both approaches reduce transmitted data, but they introduce approximation error.
+
+\subsection{Error Feedback}
+
+Error feedback addresses information loss caused by biased or lossy compression. Each worker stores the difference between the uncompressed update and the transmitted compressed update. The worker adds this residual to a later gradient before compression. Karimireddy et al. showed that error feedback can correct convergence problems associated with several compressed optimization schemes \cite{karimireddy2019ef}.
+
+\subsection{Combined Asynchrony and Communication Reduction}
+
+Prior work has shown that asynchronous execution can be combined with communication reduction in distributed optimization. Nadiradze et al. studied asynchronous decentralized SGD with quantization and local updates \cite{nadiradze2021async}. The proposed project differs in its focus. It uses a centralized parameter-server design and explicitly adapts both staleness acceptance and compression strength from live training behaviour rather than keeping these controls fixed.
+
+\section{Proposed Methodology}
+
+\subsection{System Architecture}
+
+The system will use one parameter server and multiple workers. The parameter server stores:
+\begin{itemize}
+    \item the current model parameters $\theta_t$,
+    \item the current server model version $v_s$,
+    \item adaptive staleness thresholds,
+    \item the current compression setting,
+    \item recent loss statistics,
+    \item communication statistics, and
+    \item worker-update metadata.
+\end{itemize}
+
+Each worker repeatedly performs the following operations:
+\begin{enumerate}
+    \item fetch the current model and its version,
+    \item compute a mini-batch gradient,
+    \item add the stored error-feedback residual,
+    \item compress the resulting gradient,
+    \item send the compressed gradient and model version to the server, and
+    \item update its local residual using the compression error.
+\end{enumerate}
+
+\subsection{Staleness Measurement}
+
+Suppose worker $i$ computes an update using model version $v_i$, while the parameter server currently stores version $v_s$. The staleness of that update is
+
+\begin{equation}
+\tau_i = v_s - v_i.
+\end{equation}
+
+The server will maintain two thresholds, $S_{\text{low}}$ and $S_{\text{max}}$.
+
+\begin{itemize}
+    \item If $\tau_i \leq S_{\text{low}}$, the server accepts the update at full weight.
+    \item If $S_{\text{low}} < \tau_i \leq S_{\text{max}}$, the server accepts the update with reduced weight.
+    \item If $\tau_i > S_{\text{max}}$, the server rejects the update.
+\end{itemize}
+
+For moderately stale gradients, a simple weight can be defined as
+
+\begin{equation}
+w_i = \frac{1}{1 + \beta \tau_i},
+\end{equation}
+
+where $\beta > 0$ controls how quickly the importance of a stale update decreases.
+
+The parameter update becomes
+
+\begin{equation}
+\theta_{t+1} = \theta_t - \eta_t w_i \hat{g}_i,
+\end{equation}
+
+where $\eta_t$ is the learning rate and $\hat{g}_i$ is the compressed worker gradient after error feedback.
+
+\subsection{Gradient Compression}
+
+The first compression method will use Top-K sparsification. For a gradient vector $g \in \mathbb{R}^d$, the compressor keeps the $k$ entries with the largest absolute values and sets the remaining entries to zero.
+
+The active fraction is
+
+\begin{equation}
+\rho_t = \frac{k_t}{d},
+\end{equation}
+
+where a smaller $\rho_t$ produces stronger compression.
+
+A second implementation can use quantization, where each transmitted value is represented using fewer bits. Testing both methods will show whether the adaptive controller behaves consistently across different compression mechanisms.
+
+\subsection{Error Feedback}
+
+Each worker $i$ will maintain a residual vector $e_i$. Before compression, it forms
+
+\begin{equation}
+u_i = g_i + e_i.
+\end{equation}
+
+The worker compresses this value:
+
+\begin{equation}
+\hat{g}_i = C_{\rho_t}(u_i).
+\end{equation}
+
+It then updates the residual:
+
+\begin{equation}
+e_i \leftarrow u_i - \hat{g}_i.
+\end{equation}
+
+This mechanism carries discarded information into future updates instead of permanently losing it.
+
+\subsection{Adaptive Control Mechanism}
+
+The controller will periodically inspect a moving window of training and system measurements. Candidate signals include:
+\begin{itemize}
+    \item recent training-loss slope,
+    \item loss variance,
+    \item gradient-norm variation,
+    \item average update staleness,
+    \item fraction of rejected updates,
+    \item communication time per update, and
+    \item worker throughput.
+\end{itemize}
+
+When training remains stable, the controller will reduce $\rho_t$ to apply stronger compression and increase $S_{\text{max}}$ to tolerate more delayed updates. When the loss becomes unstable or progress degrades, the controller will increase $\rho_t$ and reduce $S_{\text{max}}$.
+
+A simple initial controller can use threshold rules. A later version can use a score
+
+\begin{equation}
+R_t = aL_t + bV_t + cC_t + dT_t,
+\end{equation}
+
+where $L_t$ represents loss trend, $V_t$ represents loss variability, $C_t$ represents communication pressure, and $T_t$ represents observed staleness. The coefficients $a$, $b$, $c$, and $d$ will be tuned using validation experiments.
+
+The controller will use conservative bounded changes so that compression and staleness settings do not oscillate sharply between consecutive control intervals.
+
+\subsection{Experimental Setup}
+
+The prototype will be implemented using a distributed deep-learning framework such as PyTorch. Experiments will use a small image-classification workload for rapid testing and a larger convolutional workload for the main evaluation. A practical setup is:
+\begin{itemize}
+    \item Fashion-MNIST with a small convolutional neural network for debugging,
+    \item CIFAR-10 with ResNet-18 for the main experiment, and
+    \item multiple workers with controlled artificial slowdown to create heterogeneous execution.
+\end{itemize}
+
+Worker heterogeneity will be introduced by adding controlled computation delay, communication delay, or both. Multiple random seeds will be used for important comparisons to reduce the chance of drawing conclusions from one training run.
+
+\section{Evaluation Plan}
+
+\subsection{Baselines}
+
+The proposed method will be evaluated against:
+\begin{enumerate}
+    \item synchronous SGD,
+    \item standard asynchronous SGD,
+    \item asynchronous SGD with fixed bounded staleness,
+    \item asynchronous SGD with fixed Top-K compression,
+    \item asynchronous SGD with fixed quantization, and
+    \item adaptive staleness-aware gradient compression.
+\end{enumerate}
+
+\subsection{Metrics}
+
+The main metrics will include:
+\begin{itemize}
+    \item final test accuracy,
+    \item training loss,
+    \item wall-clock time to reach target accuracy,
+    \item total bytes transmitted,
+    \item average bytes per update,
+    \item effective compression ratio,
+    \item updates processed per second,
+    \item mean and maximum staleness,
+    \item percentage of updates rejected,
+    \item idle time caused by synchronization, and
+    \item loss variance or divergence events.
+\end{itemize}
+
+\subsection{Ablation Studies}
+
+The evaluation will also remove individual components to measure their value:
+\begin{itemize}
+    \item adaptive controller without error feedback,
+    \item error feedback with fixed compression,
+    \item adaptive compression with fixed staleness,
+    \item adaptive staleness with fixed compression, and
+    \item full joint adaptation.
+\end{itemize}
+
+These experiments will show whether performance gains come from one component or from the interaction between the components.
+
+\subsection{Success Criteria}
+
+The project will be considered successful if the proposed method:
+\begin{itemize}
+    \item reduces total communication compared with uncompressed asynchronous SGD,
+    \item reaches a target model quality faster in wall-clock time under heterogeneous workers,
+    \item avoids major loss instability compared with unrestricted asynchronous training, and
+    \item achieves final accuracy close to the strongest non-adaptive baseline.
+\end{itemize}
+
+\section{Feasibility}
+
+The project is feasible as a student research prototype because it does not require training a foundation model or operating a large production cluster. The main ideas can be tested on standard image datasets and modest GPU or CPU resources. Artificial delays can reproduce straggler behaviour even when the available machines have similar hardware.
+
+The work can be developed in stages. First, implement asynchronous training and version tracking. Next, add fixed staleness control. Then add gradient compression and error feedback. Finally, add the adaptive controller and run comparative experiments. This staged design reduces implementation risk and provides usable intermediate results.
+
+\section{Proposed Timeline}
+
+\begin{table}[ht]
+\centering
+\caption{Proposed Project Timeline}
+\label{tab:timeline}
+\begin{tabular}{p{0.16\columnwidth} p{0.74\columnwidth}}
+\toprule
+\textbf{Period} & \textbf{Work} \\
+\midrule
+Weeks 1--2 & Literature review, experiment design, and baseline selection \\
+Weeks 3--4 & Parameter server and asynchronous worker implementation \\
+Weeks 5--6 & Model-version tracking and fixed staleness control \\
+Weeks 7--8 & Top-K sparsification, quantization, and communication logging \\
+Weeks 9--10 & Error-feedback implementation and validation \\
+Weeks 11--12 & Adaptive controller design and tuning \\
+Weeks 13--14 & Heterogeneous-worker experiments and ablation studies \\
+Weeks 15--16 & Analysis, report writing, plots, and final comparison \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Expected Outcomes}
+
+The expected outcome is a prototype distributed training framework that demonstrates how communication compression and staleness management can work together. The project is expected to show that a fixed policy is not equally effective throughout training. During stable phases, the framework should save communication and accept more delayed work. During unstable phases, it should move toward safer settings.
+
+The final output will include:
+\begin{itemize}
+    \item the adaptive parameter-server implementation,
+    \item experimental scripts for creating heterogeneous worker conditions,
+    \item training and communication logs,
+    \item plots comparing the proposed approach with baselines, and
+    \item an analysis of the tradeoff between training speed, communication cost, and convergence quality.
+\end{itemize}
+
+\section{Expected Impact}
+
+The project can help researchers understand when communication reduction and asynchronous execution complement each other and when they interfere with convergence. A successful adaptive policy can reduce the need to manually choose one compression level or one staleness threshold for an entire training run.
+
+The broader value of the work lies in more efficient use of distributed computing resources. Better tolerance to slow workers can improve utilization, while lower communication volume can make distributed training more practical on bandwidth-limited clusters.
+
+\section{Conclusion}
+
+This proposal addresses two connected limitations of distributed machine learning: communication overhead and delays caused by heterogeneous workers. Asynchronous training reduces waiting but introduces stale gradients. Gradient compression reduces network traffic but introduces approximation error. The proposed system combines these techniques with bounded staleness, error feedback, and an adaptive controller.
+
+The central research idea is to adjust compression and staleness policies together instead of treating them as fixed independent settings. The evaluation will compare the proposed system with synchronous, asynchronous, fixed-staleness, and fixed-compression baselines under controlled heterogeneous conditions. The expected result is a practical framework that lowers communication cost, tolerates stragglers, and maintains stable convergence.
+
+\begin{thebibliography}{00}
+
+\bibitem{li2014ps}
+M. Li, D. G. Andersen, A. Smola, and K. Yu,
+``Communication efficient distributed machine learning with the parameter server,''
+in \textit{Advances in Neural Information Processing Systems}, vol. 27, 2014, pp. 19--27.
+
+\bibitem{lian2015async}
+X. Lian, Y. Huang, Y. Li, and J. Liu,
+``Asynchronous parallel stochastic gradient for nonconvex optimization,''
+in \textit{Advances in Neural Information Processing Systems}, vol. 28, 2015, pp. 2737--2745.
+
+\bibitem{ho2013ssp}
+Q. Ho, J. Cipar, H. Cui, S. Lee, J. K. Kim, P. B. Gibbons, G. A. Gibson, G. Ganger, and E. P. Xing,
+``More effective distributed ML via a stale synchronous parallel parameter server,''
+in \textit{Advances in Neural Information Processing Systems}, vol. 26, 2013, pp. 1223--1231.
+
+\bibitem{zhang2016staleness}
+W. Zhang, S. Gupta, X. Lian, and J. Liu,
+``Staleness-aware Async-SGD for distributed deep learning,''
+in \textit{Proceedings of the Twenty-Fifth International Joint Conference on Artificial Intelligence}, 2016, pp. 2350--2356.
+
+\bibitem{dutta2018stale}
+S. Dutta, G. Joshi, S. Ghosh, P. Dube, and P. Nagpurkar,
+``Slow and stale gradients can win the race: Error-runtime trade-offs in distributed SGD,''
+in \textit{Proceedings of the Twenty-First International Conference on Artificial Intelligence and Statistics}, vol. 84, 2018, pp. 803--812.
+
+\bibitem{alistarh2017qsgd}
+D. Alistarh, D. Grubic, J. Li, R. Tomioka, and M. Vojnovic,
+``QSGD: Communication-efficient SGD via gradient quantization and encoding,''
+in \textit{Advances in Neural Information Processing Systems}, vol. 30, 2017.
+
+\bibitem{lin2018dgc}
+Y. Lin, S. Han, H. Mao, Y. Wang, and W. J. Dally,
+``Deep Gradient Compression: Reducing the communication bandwidth for distributed training,''
+in \textit{International Conference on Learning Representations}, 2018.
+
+\bibitem{karimireddy2019ef}
+S. P. Karimireddy, Q. Rebjock, S. U. Stich, and M. Jaggi,
+``Error feedback fixes SignSGD and other gradient compression schemes,''
+in \textit{Proceedings of the 36th International Conference on Machine Learning}, vol. 97, 2019, pp. 3252--3261.
+
+\bibitem{nadiradze2021async}
+G. Nadiradze, A. Sabour, P. Davies, S. Li, and D. Alistarh,
+``Asynchronous decentralized SGD with quantized and local updates,''
+in \textit{Advances in Neural Information Processing Systems}, vol. 34, 2021.
+
+\bibitem{islamov2024asgrad}
+R. Islamov, M. Safaryan, and D. Alistarh,
+``AsGrad: A sharp unified analysis of asynchronous-SGD algorithms,''
+in \textit{Proceedings of The 27th International Conference on Artificial Intelligence and Statistics}, 2024.
+
+\end{thebibliography}
+
+\end{document}
