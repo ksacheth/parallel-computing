@@ -10,7 +10,7 @@ workload:
   num_workers: 3
   lr: 0.05
   lr_decay_frac: 0.5
-  max_updates: 7500
+  max_updates: 5000
   max_wall_time_s: 600
   eval_interval: 500
 heterogeneity:
