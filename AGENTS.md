@@ -69,7 +69,7 @@ Parameter server (Li et al. 2014), Async-SGD (Lian et al. 2015), SSP (Ho et al. 
 
 ## Repo Layout
 
-Stage 1 (asynchronous parameter server with version tracking) is implemented and gated by `tests/test_smoke.py`. Placeholders remaining for later stages: `staleness.py` (stage 2), Top-K/quantize in `compression.py` (stage 3), `controller.py` (stage 5), and `models/resnet_cifar.py` (stage 6).
+Stages 1–2 are implemented and gated by `tests/test_smoke.py` (async parameter server) and `tests/test_staleness.py` (fixed bounded-staleness policy; `staleness.enabled: false` in configs reproduces plain async SGD). Placeholders remaining for later stages: Top-K/quantize in `compression.py` (stage 3), error-feedback residual in `worker.py` (stage 4), `controller.py` (stage 5), and `models/resnet_cifar.py` (stage 6).
 
 - `src/asgc/` — core package.
   - `config.py`: YAML config loading as dataclasses, global seeding.
