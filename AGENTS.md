@@ -48,3 +48,72 @@ An **adaptive controller** periodically inspects live training and system signal
 ### Key References
 
 Parameter server (Li et al. 2014), Async-SGD (Lian et al. 2015), SSP (Ho et al. 2013), staleness-aware Async-SGD (Zhang et al. 2016), error-runtime tradeoffs (Dutta et al. 2018), QSGD (Alistarh et al. 2017), Deep Gradient Compression (Lin et al. 2018), error feedback (Karimireddy et al. 2019), async decentralized SGD with quantized updates (Nadiradze et al. 2021), AsGrad analysis (Islamov et al. 2024).
+
+---
+
+# Agent Guide
+
+## Normative Sources
+
+- `docs/methodology.tex` is the implementation spec: implement the equations and Algorithm 1 exactly as written there.
+- `docs/proposal.tex` provides scope, motivation, and the evaluation plan. Do not edit either LaTeX document unless explicitly asked.
+
+## Environment and Commands
+
+- Python 3.11+ and PyTorch. CPU is sufficient for all experiments; CUDA is optional.
+- Install dependencies: `pip install -r requirements.txt`.
+- Datasets auto-download via torchvision into `data/` on first use (CIFAR-10 is about 170 MB).
+- Run tests: `python -m pytest tests/ -q`. All tests must pass before a stage is considered done.
+- Smoke run: `python scripts/run_experiment.py --config configs/smoke_fmnist.yaml`.
+- Windows note: workers run as separate processes and Windows uses the spawn start method. Guard entry points with `if __name__ == "__main__"` and keep config objects picklable.
+
+## Repo Layout
+
+All files below currently exist as empty placeholders; no implementation has been written yet.
+
+- `src/asgc/` — core package.
+  - `config.py`: YAML config loading as dataclasses, global seeding.
+  - `transport.py`: serializable messages (`FetchResponse`, `PushUpdate`), queue-based transport, byte accounting at the payload level.
+  - `compression.py`: `Compressor` interface with `TopK` (values + indices), `Quantize`, and `Identity` implementations; wire size including sparse-index overhead.
+  - `staleness.py`: pure accept / downweight / reject policy with weight w = 1/(1 + βτ).
+  - `controller.py`: threshold policy and weighted-score policy (R = aL + bV + cC + dT), bounded per-interval changes.
+  - `server.py`: parameter-server loop, version counter, applies the staleness policy, periodically invokes the controller.
+  - `worker.py`: worker loop (fetch → gradient → u = g + e → compress → push → update residual) and delay injection.
+  - `metrics.py`: JSONL event schema; the single source of truth for controller inputs and plots.
+  - `data.py`: dataset loading and mini-batch partitioning across workers.
+  - `models/`: `cnn_mnist.py` (debug workload), `resnet_cifar.py` (main workload).
+- `configs/` — one YAML per experiment run; all hyperparameters and thresholds live here, never in code. `smoke_fmnist.yaml` is the stage gate; `baselines/` holds the six comparison runs; `adaptive/ablations/` holds the ablation runs.
+- `scripts/` — `run_experiment.py` (the only entry point) and `plot_results.py` (JSONL to figures).
+- `tests/` — unit tests per module plus `test_smoke.py` end-to-end.
+- `results/` and `data/` are runtime artifacts created automatically on first run; keep them out of version control.
+
+## Settled Design Decisions
+
+Do not re-litigate these in future sessions:
+
+- Single machine, simulated distribution. Workers are separate processes exchanging messages through the `transport.py` interface. Real multi-machine execution later means adding a transport implementation, not rewriting training logic.
+- Framework is PyTorch; no alternative frameworks.
+- Baselines and ablations run through the same pipeline, differing only in config (for example `controller.enabled: false` or `compression.mode: identity`).
+- The controller reads only the event log produced by `metrics.py`, never worker internals.
+- Wall-clock time includes injected delays. The delay schedule is part of the config and must be reported with results.
+
+## Measurable Success Gates
+
+- CIFAR-10 / ResNet-18: target accuracy 0.93; report wall-clock time to reach 0.90.
+- Instability means NaN/Inf loss or a validation accuracy drop greater than 2 points between consecutive evaluations.
+- "Close to the strongest non-adaptive baseline" means within 1 point final test accuracy.
+- Communication gate: total transmitted bytes at most 50% of uncompressed async SGD at comparable accuracy. Calibrate this after stage 3 measurements, adjust once, then freeze.
+
+## Testing Policy
+
+- Unit tests must cover: Top-K returns correct indices and values; quantized values stay within the level range; error-feedback conservation (accumulated residual equals total discarded mass); staleness boundaries exactly at τ = S_low and τ = S_max; server version increments only on accepted updates.
+- A stage is done when its tests pass and the smoke run converges (loss decreases, no NaN) on Fashion-MNIST with 3 workers.
+
+## Stage-to-Module Mapping
+
+1. Asynchronous parameter server with version tracking → `config.py`, `transport.py`, `models/`, `data.py`, `server.py`, `worker.py`, `metrics.py` with the `Identity` compressor and no staleness check.
+2. Fixed bounded-staleness policy → `staleness.py` and `tests/test_staleness.py`.
+3. Top-K / quantization with communication logging → `compression.py` and transport byte accounting.
+4. Error feedback → residual state in `worker.py` and `tests/test_error_feedback.py`.
+5. Adaptive controller → `controller.py` (threshold rules first, then the score policy) and `tests/test_controller.py`.
+6. Heterogeneity experiments, ablations, analysis → `configs/` and `scripts/plot_results.py`.
