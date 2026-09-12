@@ -23,6 +23,7 @@ from asgc.metrics import (
     UpdateEvent,
 )
 from asgc.models.cnn_mnist import build_model
+from asgc.staleness import decide
 from asgc.transport import STOP_VERSION, FetchResponse, Transport
 
 FETCH_POLL_S = 0.0
@@ -59,6 +60,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     t0 = time.perf_counter()
     version = 0
     applied = 0
+    rejected = 0
     total_bytes = 0
     stalenesses: list[int] = []
     last_eval_version = -1
@@ -110,27 +112,34 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             continue
 
         elapsed = time.perf_counter() - t0
-        staleness = version - update.version
-        stalenesses.append(staleness)
-        decoded = compressor.decode(update.payload)
-        lr = config.workload.lr
-        if lr_milestone is not None and version >= lr_milestone:
-            lr *= config.workload.lr_gamma
-        with torch.no_grad():
-            for p, g in zip(model.parameters(), decoded):
-                p.add_(g.to(p.dtype), alpha=-lr)
-        version += 1
-        applied += 1
+        tau = version - update.version
+        stalenesses.append(tau)
+        decision = decide(tau, config.staleness)
+        if decision.accept:
+            decoded = compressor.decode(update.payload)
+            lr = config.workload.lr
+            if lr_milestone is not None and version >= lr_milestone:
+                lr *= config.workload.lr_gamma
+            with torch.no_grad():
+                for p, g in zip(model.parameters(), decoded):
+                    p.add_(g.to(p.dtype), alpha=-lr * decision.weight)
+            version += 1
+            applied += 1
+            kind = "downweighted" if decision.weight < 1.0 else "accepted"
+        else:
+            rejected += 1
+            kind = "rejected"
         total_bytes += update.payload_bytes
         writer.write(UpdateEvent(
             event="update",
             worker_id=update.worker_id,
             version=version,
-            staleness=staleness,
+            staleness=tau,
             payload_bytes=update.payload_bytes,
             fetch_s=update.fetch_s,
             compute_s=update.compute_s,
-            decision="accepted",
+            decision=kind,
+            weight=decision.weight,
             elapsed_s=elapsed,
         ))
 
@@ -148,6 +157,8 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     writer.write(RunEndEvent(
         event="run_end",
         applied_updates=applied,
+        rejected_updates=rejected,
+        rejected_frac=rejected / len(stalenesses) if stalenesses else 0.0,
         total_bytes=total_bytes,
         updates_per_sec=applied / elapsed if elapsed > 0 else 0.0,
         elapsed_s=elapsed,
@@ -157,7 +168,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         final_test_loss=final_loss,
     ))
     writer.close()
-    print(f"[server] run complete: {applied} updates, {total_bytes} bytes, {elapsed:.1f}s", flush=True)
+    print(f"[server] run complete: {applied} applied ({rejected} rejected), {total_bytes} bytes, {elapsed:.1f}s", flush=True)
 
 
 if __name__ == "__main__":

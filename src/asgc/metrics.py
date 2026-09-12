@@ -28,12 +28,13 @@ class RunStartEvent:
 class UpdateEvent:
     event: str
     worker_id: int
-    version: int  # server version after applying
+    version: int  # server version after the event; unchanged for rejections
     staleness: int  # server version at arrival minus worker version
     payload_bytes: int
     fetch_s: float
     compute_s: float
-    decision: str  # accepted | downweighted | rejected (stage 2+)
+    decision: str  # accepted | downweighted | rejected
+    weight: float  # gradient scale applied; 0.0 for rejections
     elapsed_s: float  # seconds since run start
 
 
@@ -50,6 +51,8 @@ class EvalEvent:
 class RunEndEvent:
     event: str
     applied_updates: int
+    rejected_updates: int
+    rejected_frac: float
     total_bytes: int
     updates_per_sec: float
     elapsed_s: float
@@ -87,6 +90,8 @@ def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
     final_eval = evals[-1] if evals else {}
     return {
         "applied_updates": run_end.get("applied_updates", len(updates)),
+        "rejected_updates": run_end.get("rejected_updates", 0),
+        "rejected_frac": run_end.get("rejected_frac", 0.0),
         "final_test_accuracy": run_end.get("final_test_accuracy", final_eval.get("test_accuracy")),
         "final_test_loss": run_end.get("final_test_loss", final_eval.get("test_loss")),
         "total_bytes": run_end.get("total_bytes", sum(e["payload_bytes"] for e in updates)),

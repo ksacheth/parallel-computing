@@ -50,7 +50,7 @@ def main() -> None:
     events = read_events(Path(config.run.results_dir) / config.run.name / "events.jsonl")
     summary = summarize(events)
     print(f"run '{config.run.name}' complete")
-    print(f"  applied updates : {summary['applied_updates']}")
+    print(f"  applied updates : {summary['applied_updates']} (rejected {summary['rejected_updates']}, {summary['rejected_frac']:.1%})")
     print(f"  final accuracy  : {summary['final_test_accuracy']:.4f}")
     print(f"  final loss      : {summary['final_test_loss']:.4f}")
     print(f"  total bytes     : {summary['total_bytes']}")
