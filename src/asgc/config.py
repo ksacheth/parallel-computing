@@ -49,11 +49,26 @@ class CompressionConfig:
 
 
 @dataclass
+class StalenessConfig:
+    """Fixed bounded-staleness policy. Disabled reproduces plain async SGD.
+
+    Regions: tau <= s_low accept at full weight; s_low < tau <= s_max
+    downweight by 1/(1 + beta*tau); tau > s_max reject.
+    """
+
+    enabled: bool = False
+    s_low: int = 2
+    s_max: int = 6
+    beta: float = 0.5
+
+
+@dataclass
 class ExperimentConfig:
     run: RunConfig
     workload: WorkloadConfig
     heterogeneity: HeterogeneityConfig = field(default_factory=HeterogeneityConfig)
     compression: CompressionConfig = field(default_factory=CompressionConfig)
+    staleness: StalenessConfig = field(default_factory=StalenessConfig)
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -69,6 +84,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         workload=WorkloadConfig(**(raw.get("workload", {}) or {})),
         heterogeneity=HeterogeneityConfig(**heterogeneity),
         compression=CompressionConfig(**(raw.get("compression", {}) or {})),
+        staleness=StalenessConfig(**(raw.get("staleness", {}) or {})),
     )
 
 
