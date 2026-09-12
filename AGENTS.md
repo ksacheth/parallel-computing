@@ -69,7 +69,7 @@ Parameter server (Li et al. 2014), Async-SGD (Lian et al. 2015), SSP (Ho et al. 
 
 ## Repo Layout
 
-All files below currently exist as empty placeholders; no implementation has been written yet.
+Stage 1 (asynchronous parameter server with version tracking) is implemented and gated by `tests/test_smoke.py`. Placeholders remaining for later stages: `staleness.py` (stage 2), Top-K/quantize in `compression.py` (stage 3), `controller.py` (stage 5), and `models/resnet_cifar.py` (stage 6).
 
 - `src/asgc/` — core package.
   - `config.py`: YAML config loading as dataclasses, global seeding.
