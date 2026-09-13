@@ -82,8 +82,9 @@ def test_quantize_codes_stay_in_range_and_error_is_bounded():
     assert piece.codes.dtype == torch.int8
     assert piece.codes.abs().max() <= 127
     (rebuilt,) = compressor.decode([piece], [u])
-    # stochastic rounding keeps every element within one code of the truth
-    assert (rebuilt - u).abs().max() <= piece.scale.item() / 127 + 1e-6
+    # stochastic rounding keeps every element within one code of the truth;
+    # the encoded scale already includes 1/s, so the bound is scale itself
+    assert (rebuilt - u).abs().max() <= piece.scale.item() + 1e-6
 
 
 def test_quantize_zero_tensor_is_safe():

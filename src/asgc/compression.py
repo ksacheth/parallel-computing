@@ -134,13 +134,15 @@ class QuantizeCompressor:
             # round up with probability equal to the fractional part
             frac = scaled - floor
             codes = (floor + (torch.rand_like(frac) < frac).to(torch.float32)).to(torch.int8)
-            pieces.append(QuantizedPiece(codes=codes, scale=norm.detach().clone()))
+            # fold 1/s into the scale so decode never depends on the encoder's
+            # bit width — adapted settings cannot race with in-flight payloads
+            pieces.append(QuantizedPiece(codes=codes, scale=(norm / self.levels).detach().clone()))
         return pieces
 
     def decode(self, payload: list[Piece], like: Sequence[torch.Tensor]) -> list[torch.Tensor]:
         out: list[torch.Tensor] = []
         for piece, ref in zip(payload, like):
-            restored = piece.codes.to(torch.float32) / self.levels * piece.scale
+            restored = piece.codes.to(torch.float32) * piece.scale
             out.append(restored.reshape(ref.shape).to(ref.dtype))
         return out
 
