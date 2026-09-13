@@ -54,6 +54,8 @@ class RunEndEvent:
     rejected_updates: int
     rejected_frac: float
     total_bytes: int
+    raw_bytes: int  # uncompressed equivalent: parameter bytes x arrivals
+    compression_ratio: float  # raw_bytes / total_bytes (CR = B_raw / B_cmp)
     updates_per_sec: float
     elapsed_s: float
     mean_staleness: float
@@ -95,6 +97,8 @@ def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
         "final_test_accuracy": run_end.get("final_test_accuracy", final_eval.get("test_accuracy")),
         "final_test_loss": run_end.get("final_test_loss", final_eval.get("test_loss")),
         "total_bytes": run_end.get("total_bytes", sum(e["payload_bytes"] for e in updates)),
+        "raw_bytes": run_end.get("raw_bytes", sum(e["payload_bytes"] for e in updates)),
+        "compression_ratio": run_end.get("compression_ratio", 1.0),
         "updates_per_sec": run_end.get("updates_per_sec", 0.0),
         "mean_staleness": run_end.get("mean_staleness", 0.0),
         "max_staleness": run_end.get("max_staleness", 0),
