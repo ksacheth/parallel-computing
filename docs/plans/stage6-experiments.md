@@ -82,6 +82,19 @@ The final stage: everything the evaluation needs. CIFAR-10 + ResNet-18 as the ma
 
 **GPU note:** the user's RTX 4050 required the CUDA PyTorch build (`torch==2.11.0+cu128`); `run.device: auto` now uses it everywhere, taking async runs from ~300 s to ~70 s and making CIFAR/ResNet-18 practical (600 updates in ~130 s). The full CIFAR matrix (33 runs) launches with `python scripts/run_matrix.py --matrix configs/matrix_cifar_full.yaml`.
 
+## CIFAR-10 slice results (seed 0, 6000 updates, ResNet-18, 0.5 s / 1.5 s stragglers)
+
+| run | acc | GB sent | CR | upd/s | max acc drop |
+|---|---|---|---|---|---|
+| plain async | 85.50% | 268.2 | 1.0× | 5.38 | 0.4 pts |
+| fixed Top-K (no EF) | 84.32% | 134.1 | 2.0× | 5.16 | 0.0 |
+| **Top-K + EF** | **86.14%** | 134.1 | 2.0× | 5.00 | 0.0 |
+| adaptive | 83.72% | **34.0** | **8.13×** | 4.95 | 0.0 |
+
+- **The central claim replicates on the main workload**: Top-K + EF beats uncompressed async on both axes (86.14% vs 85.50% at exactly half the bytes), with zero stability drops. EF is worth +1.8 points at equal bytes over no-EF compression (84.32 → 86.14).
+- **The rebound-fixed controller adapted cleanly on CIFAR**: zero false instability trips across 40 logged decisions, ρ 0.25 → 0.05 (bound) and s_max 4 → 10 within 2 minutes, holding the extreme-compression operating point stably. It delivered 8.13× compression — 4× less data than fixed Top-K — but paid 2.4 accuracy points.
+- **Concrete tuning item surfaced by the slice**: with `rho_bounds` floored at 0.05, the controller compresses past the accuracy knee on CIFAR, missing the "within 1 point of the strongest non-adaptive baseline" gate (83.72 vs 86.14). Raising the floor to ≈0.10–0.15 — or giving the controller an accuracy-drop signal — is the next tuning step. Also noted: with `eval_interval: 500` and a 30 s control interval, most control windows contained at most one eval, so the controller ran on system signals only; the control interval should track the eval cadence on CIFAR budgets.
+
 ## Definition of Done
 
 - `pytest tests/ -q` green with the new model, sync, and controller-flag tests plus all five prior gates.
