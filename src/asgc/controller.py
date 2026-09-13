@@ -75,14 +75,14 @@ class ThresholdPolicy:
         )
         if unstable:
             return ControlDecision(
-                value=min(value + delta, hi),
-                s_max=max(s_max - c.max_delta_s_max, c.s_max_bounds[0]),
+                value=min(value + delta, hi) if c.adapt_compression else value,
+                s_max=max(s_max - c.max_delta_s_max, c.s_max_bounds[0]) if c.adapt_staleness else s_max,
                 reason="instability",
             )
         if stats.bytes_per_s >= c.comm_pressure_min:
             return ControlDecision(
-                value=max(value - delta, lo),
-                s_max=min(s_max + c.max_delta_s_max, c.s_max_bounds[1]),
+                value=max(value - delta, lo) if c.adapt_compression else value,
+                s_max=min(s_max + c.max_delta_s_max, c.s_max_bounds[1]) if c.adapt_staleness else s_max,
                 reason="stable+comm_pressure",
             )
         return ControlDecision(value=value, s_max=s_max, reason="hold")
@@ -113,14 +113,14 @@ class ScorePolicy:
         (lo, hi), delta = _bounds_and_delta(c, self.mode)
         if r > self.deadband:
             return ControlDecision(
-                value=min(value + delta, hi),
-                s_max=max(s_max - c.max_delta_s_max, c.s_max_bounds[0]),
+                value=min(value + delta, hi) if c.adapt_compression else value,
+                s_max=max(s_max - c.max_delta_s_max, c.s_max_bounds[0]) if c.adapt_staleness else s_max,
                 reason=f"safer (R={r:.3f})",
             )
         if r < -self.deadband:
             return ControlDecision(
-                value=max(value - delta, lo),
-                s_max=min(s_max + c.max_delta_s_max, c.s_max_bounds[1]),
+                value=max(value - delta, lo) if c.adapt_compression else value,
+                s_max=min(s_max + c.max_delta_s_max, c.s_max_bounds[1]) if c.adapt_staleness else s_max,
                 reason=f"aggressive (R={r:.3f})",
             )
         return ControlDecision(value=value, s_max=s_max, reason=reason)
