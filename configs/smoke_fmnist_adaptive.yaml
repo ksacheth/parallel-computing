@@ -28,5 +28,5 @@ error_feedback:
   enabled: true
 controller:
   enabled: true
-  interval_s: 15
+  interval_s: 8
   policy: threshold
