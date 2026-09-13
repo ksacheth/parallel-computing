@@ -49,6 +49,26 @@ class EvalEvent:
 
 
 @dataclass
+class ControlEvent:
+    """One controller decision: the window it saw, and what it changed."""
+
+    event: str
+    elapsed_s: float
+    loss_trend: float
+    loss_variability: float
+    mean_staleness: float
+    rejected_frac: float
+    bytes_per_s: float
+    updates_per_s: float
+    residual_norm_var: float
+    old_compression: float
+    new_compression: float
+    old_s_max: int
+    new_s_max: int
+    reason: str
+
+
+@dataclass
 class RunEndEvent:
     event: str
     applied_updates: int

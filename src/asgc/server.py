@@ -7,6 +7,7 @@ event schema is already final.
 from __future__ import annotations
 
 import time
+from dataclasses import asdict, replace
 
 import torch
 import torch.nn as nn
@@ -14,8 +15,10 @@ from torch.utils.data import DataLoader
 
 from asgc.compression import make_compressor
 from asgc.config import ExperimentConfig
+from asgc.controller import compute_window_stats, make_policy
 from asgc.data import test_loader
 from asgc.metrics import (
+    ControlEvent,
     EvalEvent,
     EventWriter,
     RunEndEvent,
@@ -68,6 +71,16 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     final_acc = 0.0
     final_loss = 0.0
 
+    controller = config.controller
+    policy = make_policy(controller, config.compression.mode) if controller.enabled else None
+    current_strength = (
+        config.compression.rho if config.compression.mode == "topk" else float(config.compression.bits)
+    )
+    compression_for_workers = config.compression
+    effective_staleness = config.staleness
+    window: list[dict] = []
+    next_control_t = t0 + controller.interval_s if policy is not None else float("inf")
+
     writer.write(RunStartEvent(
         event="run_start",
         config_name=config.run.name,
@@ -86,7 +99,9 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         final_acc, final_loss = acc, loss
         last_eval_version = version
         elapsed = time.perf_counter() - t0
-        writer.write(EvalEvent(event="eval", version=version, test_accuracy=acc, test_loss=loss, elapsed_s=elapsed))
+        eval_event = EvalEvent(event="eval", version=version, test_accuracy=acc, test_loss=loss, elapsed_s=elapsed)
+        writer.write(eval_event)
+        window.append(asdict(eval_event))
         print(f"[eval] version={version} accuracy={acc:.4f} loss={loss:.4f} elapsed={elapsed:.1f}s", flush=True)
 
     run_eval()  # model quality at version 0, before any update
@@ -99,6 +114,41 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     )
 
     while applied < config.workload.max_updates and (time.perf_counter() - t0) < config.workload.max_wall_time_s:
+        if policy is not None and time.perf_counter() >= next_control_t:
+            stats = compute_window_stats(window)
+            decision = policy.decide(stats, current_strength, effective_staleness.s_max)
+            control_event = ControlEvent(
+                event="control",
+                elapsed_s=time.perf_counter() - t0,
+                loss_trend=stats.loss_trend,
+                loss_variability=stats.loss_variability,
+                mean_staleness=stats.mean_staleness,
+                rejected_frac=stats.rejected_frac,
+                bytes_per_s=stats.bytes_per_s,
+                updates_per_s=stats.updates_per_s,
+                residual_norm_var=stats.residual_norm_var,
+                old_compression=current_strength,
+                new_compression=decision.value,
+                old_s_max=effective_staleness.s_max,
+                new_s_max=decision.s_max,
+                reason=decision.reason,
+            )
+            writer.write(control_event)
+            print(
+                f"[control] strength={current_strength:.3f}->{decision.value:.3f} "
+                f"s_max={effective_staleness.s_max}->{decision.s_max} ({decision.reason})",
+                flush=True,
+            )
+            current_strength = decision.value
+            effective_staleness = replace(effective_staleness, s_max=decision.s_max)
+            compression_for_workers = replace(
+                config.compression,
+                rho=current_strength if config.compression.mode == "topk" else config.compression.rho,
+                bits=int(current_strength) if config.compression.mode == "quantize" else config.compression.bits,
+            )
+            window = []
+            next_control_t += controller.interval_s
+
         # Answer every pending fetch before considering pushes: workers must
         # never starve behind update processing.
         while True:
@@ -106,7 +156,11 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             if worker_id is None:
                 break
             snapshot = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            transport.reply(worker_id, FetchResponse(params=snapshot, version=version))
+            transport.reply(worker_id, FetchResponse(
+                params=snapshot,
+                version=version,
+                compression=compression_for_workers if policy is not None else None,
+            ))
 
         update = transport.next_push(timeout=PUSH_POLL_S)
         if update is None:
@@ -115,7 +169,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         elapsed = time.perf_counter() - t0
         tau = version - update.version
         stalenesses.append(tau)
-        decision = decide(tau, config.staleness)
+        decision = decide(tau, effective_staleness)
         if decision.accept:
             decoded = compressor.decode(update.payload, list(model.parameters()))
             lr = config.workload.lr
@@ -131,7 +185,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             rejected += 1
             kind = "rejected"
         total_bytes += update.payload_bytes
-        writer.write(UpdateEvent(
+        update_event = UpdateEvent(
             event="update",
             worker_id=update.worker_id,
             version=version,
@@ -143,7 +197,9 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             weight=decision.weight,
             residual_norm=update.residual_norm,
             elapsed_s=elapsed,
-        ))
+        )
+        writer.write(update_event)
+        window.append(asdict(update_event))
 
         if version - last_eval_version >= config.workload.eval_interval:
             run_eval()

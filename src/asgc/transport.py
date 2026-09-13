@@ -13,16 +13,24 @@ from dataclasses import dataclass
 
 import torch
 
+from asgc.config import CompressionConfig
+
 STOP_VERSION = -1
 
 
 @dataclass
 class FetchResponse:
-    """Reply to a worker fetch: a snapshot of the server model and its version."""
+    """Reply to a worker fetch: a snapshot of the server model and its version.
+
+    ``compression`` carries the server's current compression setting when the
+    controller is enabled (None otherwise); workers rebuild their compressor
+    when it differs from their own.
+    """
 
     params: dict[str, torch.Tensor] | None
     version: int
     stop: bool = False
+    compression: CompressionConfig | None = None
 
 
 @dataclass

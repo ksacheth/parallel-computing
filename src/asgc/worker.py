@@ -27,7 +27,8 @@ def worker_main(config: ExperimentConfig, worker_id: int, transport: Transport) 
     seed_everything(config.run.seed + 1000 + worker_id)
     model = build_model(config.workload.model)
     model.train()
-    compressor = make_compressor(config.compression)
+    current_compression = config.compression
+    compressor = make_compressor(current_compression)
     batches = cycle(worker_loader(config, worker_id))
     criterion = nn.CrossEntropyLoss()
 
@@ -41,6 +42,11 @@ def worker_main(config: ExperimentConfig, worker_id: int, transport: Transport) 
         fetch_s = time.perf_counter() - fetch_start
         if response.stop:
             break
+        if response.compression is not None and response.compression != current_compression:
+            # the controller adapted the compression setting; the EF residual
+            # is per-parameter state and survives the rebuild untouched
+            current_compression = response.compression
+            compressor = make_compressor(current_compression)
         model.load_state_dict(response.params)
 
         x, y = next(batches)
