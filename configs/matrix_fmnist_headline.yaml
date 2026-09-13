@@ -1,0 +1,10 @@
+# Fashion-MNIST headline comparison: six methods, identical workload and
+# delay schedule, run per seed via scripts/run_matrix.py.
+configs:
+  - configs/comparisons/fmnist_headline/sync_sgd.yaml
+  - configs/comparisons/fmnist_headline/async_plain.yaml
+  - configs/comparisons/fmnist_headline/async_fixed_staleness.yaml
+  - configs/comparisons/fmnist_headline/async_fixed_topk.yaml
+  - configs/comparisons/fmnist_headline/async_topk_ef.yaml
+  - configs/comparisons/fmnist_headline/adaptive.yaml
+seeds: [0]

@@ -1,22 +1,22 @@
 run:
-  name: cifar_sync_sgd
+  name: fmnist_sync_sgd
   seed: 0
   results_dir: results
   data_root: data
 workload:
-  dataset: cifar10
-  model: resnet18
+  dataset: fashion_mnist
+  model: small_cnn
   batch_size: 128
   num_workers: 3
-  lr: 0.02
+  lr: 0.05
   lr_decay_frac: 0.5
-  max_updates: 6000
-  max_wall_time_s: 21600
-  eval_interval: 500
-  target_accuracy: 0.80
+  max_updates: 1500
+  max_wall_time_s: 1200
+  eval_interval: 250
+  target_accuracy: 0.85
   sync: true
 heterogeneity:
-  compute_delay: {1: 0.5, 2: 1.5}
+  compute_delay: {1: 0.3}
   comm_delay_ms: 0
 compression:
   mode: identity
