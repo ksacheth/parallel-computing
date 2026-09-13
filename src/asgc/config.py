@@ -76,6 +76,38 @@ class ErrorFeedbackConfig:
 
 
 @dataclass
+class ControllerConfig:
+    """Runtime controller adapting compression strength and s_max together.
+
+    Disabled by default reproduces the fixed policies of stages 2-4. The
+    control vector per the methodology is c = (compression, tau_max): rho for
+    topk mode, bits for quantize mode; s_low and beta stay fixed. All
+    decisions are bounded per interval and clamped to the hard bounds.
+    """
+
+    enabled: bool = False
+    interval_s: float = 30.0
+    policy: str = "threshold"  # threshold | score
+    # threshold policy: instability tolerances and the communication-pressure
+    # point (bytes/s) above which stable training justifies stronger compression
+    worsen_tol: float = 0.01
+    variability_tol: float = 0.02
+    reject_frac_max: float = 0.15
+    comm_pressure_min: float = 1_000_000.0
+    # score policy: R = a*trend + b*variability + c*comm + d*staleness
+    score_weights: dict[str, float] = field(
+        default_factory=lambda: {"a": 1.0, "b": 1.0, "c": 1.0, "d": 1.0}
+    )
+    # hard bounds and per-interval anti-oscillation deltas
+    rho_bounds: tuple[float, float] = (0.05, 0.5)
+    bits_bounds: tuple[int, int] = (2, 8)
+    s_max_bounds: tuple[int, int] = (2, 10)
+    max_delta_rho: float = 0.05
+    max_delta_bits: int = 1
+    max_delta_s_max: int = 1
+
+
+@dataclass
 class ExperimentConfig:
     run: RunConfig
     workload: WorkloadConfig
@@ -83,6 +115,7 @@ class ExperimentConfig:
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     staleness: StalenessConfig = field(default_factory=StalenessConfig)
     error_feedback: ErrorFeedbackConfig = field(default_factory=ErrorFeedbackConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -100,6 +133,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         compression=CompressionConfig(**(raw.get("compression", {}) or {})),
         staleness=StalenessConfig(**(raw.get("staleness", {}) or {})),
         error_feedback=ErrorFeedbackConfig(**(raw.get("error_feedback", {}) or {})),
+        controller=ControllerConfig(**(raw.get("controller", {}) or {})),
     )
 
 
