@@ -35,6 +35,7 @@ class UpdateEvent:
     compute_s: float
     decision: str  # accepted | downweighted | rejected
     weight: float  # gradient scale applied; 0.0 for rejections
+    residual_norm: float  # worker error-feedback residual L2 norm; 0.0 when EF disabled
     elapsed_s: float  # seconds since run start
 
 

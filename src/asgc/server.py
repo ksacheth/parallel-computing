@@ -141,6 +141,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             compute_s=update.compute_s,
             decision=kind,
             weight=decision.weight,
+            residual_norm=update.residual_norm,
             elapsed_s=elapsed,
         ))
 
