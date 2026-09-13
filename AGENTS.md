@@ -69,7 +69,7 @@ Parameter server (Li et al. 2014), Async-SGD (Lian et al. 2015), SSP (Ho et al. 
 
 ## Repo Layout
 
-Stages 1–2 are implemented and gated by `tests/test_smoke.py` (async parameter server) and `tests/test_staleness.py` (fixed bounded-staleness policy; `staleness.enabled: false` in configs reproduces plain async SGD). Placeholders remaining for later stages: Top-K/quantize in `compression.py` (stage 3), error-feedback residual in `worker.py` (stage 4), `controller.py` (stage 5), and `models/resnet_cifar.py` (stage 6).
+Stages 1–3 are implemented and gated by `tests/test_smoke.py` (async parameter server), `tests/test_staleness.py` (fixed bounded-staleness policy; `staleness.enabled: false` reproduces plain async SGD), and `tests/test_compression.py` (Top-K and QSGD-style quantization with exact wire-byte accounting). Four of the six proposal baselines are now pure configs: plain async (`staleness.enabled: false`, `compression.mode: identity`), fixed staleness, fixed Top-K (`compression.mode: topk`), and fixed quantization (`compression.mode: quantize`). Placeholders remaining for later stages: the error-feedback residual in `worker.py` (stage 4), `controller.py` (stage 5), and `models/resnet_cifar.py` (stage 6).
 
 - `src/asgc/` — core package.
   - `config.py`: YAML config loading as dataclasses, global seeding.
