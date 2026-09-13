@@ -65,12 +65,24 @@ class StalenessConfig:
 
 
 @dataclass
+class ErrorFeedbackConfig:
+    """Worker-side error feedback: e <- u - D(C(u)) with u = g + e.
+
+    Disabled by default. Under identity compression EF is a mathematical
+    no-op (the reconstruction equals u, so the residual stays zero).
+    """
+
+    enabled: bool = False
+
+
+@dataclass
 class ExperimentConfig:
     run: RunConfig
     workload: WorkloadConfig
     heterogeneity: HeterogeneityConfig = field(default_factory=HeterogeneityConfig)
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     staleness: StalenessConfig = field(default_factory=StalenessConfig)
+    error_feedback: ErrorFeedbackConfig = field(default_factory=ErrorFeedbackConfig)
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -87,6 +99,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         heterogeneity=HeterogeneityConfig(**heterogeneity),
         compression=CompressionConfig(**(raw.get("compression", {}) or {})),
         staleness=StalenessConfig(**(raw.get("staleness", {}) or {})),
+        error_feedback=ErrorFeedbackConfig(**(raw.get("error_feedback", {}) or {})),
     )
 
 
