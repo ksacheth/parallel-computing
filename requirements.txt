@@ -3,3 +3,7 @@ torchvision>=0.17
 numpy>=1.26
 pyyaml>=6.0
 pytest>=8.0
+matplotlib>=3.8
+
+# GPU users: the default wheels above are CPU-only. Install the CUDA build instead:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
