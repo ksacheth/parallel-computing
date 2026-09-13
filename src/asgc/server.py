@@ -1,6 +1,13 @@
 """Parameter-server loop: authoritative model, version counter, update application.
 
-Stage 1 accepts every arriving update at full weight. The staleness policy
+Two topologies share this loop. Async (default): every arriving update is
+measured and applied immediately under the staleness policy. Sync
+(``workload.sync``): pushes are buffered per version and the mean of all
+worker gradients is applied once per round, after which held fetch replies
+are released — true bulk-synchronous behavior with the workers' fetches
+blocking until the round completes.
+
+Stage 1 accepts every arriving update at full weight; the staleness policy
 arrives in stage 2 behind the ``decision`` field of the update event, so the
 event schema is already final.
 """
@@ -14,9 +21,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from asgc.compression import make_compressor
-from asgc.config import ExperimentConfig
+from asgc.config import ExperimentConfig, resolve_device
 from asgc.controller import compute_window_stats, make_policy
-from asgc.data import test_loader
+from asgc.data import test_loader, worker_loader
 from asgc.metrics import (
     ControlEvent,
     EvalEvent,
@@ -27,11 +34,29 @@ from asgc.metrics import (
 )
 from asgc.models.cnn_mnist import build_model
 from asgc.staleness import decide
-from asgc.transport import STOP_VERSION, FetchResponse, Transport
+from asgc.transport import FetchRequest, FetchResponse, Transport, STOP_VERSION
 
 FETCH_POLL_S = 0.0
 PUSH_POLL_S = 0.002
 SHUTDOWN_GRACE_S = 2.0
+
+
+def _bn_recalibrate(model: nn.Module, loader: DataLoader, device: torch.device, batches: int = 64) -> None:
+    """Refresh BatchNorm running statistics against the current server weights.
+
+    The server never runs training forwards, so its BN running stats would
+    otherwise stay at initialization and every eval of a BN model would be
+    meaningless (accuracy pinned near chance). A short no-grad forward sweep
+    re-estimates the stats honestly, identically for every method.
+    """
+    if not any(isinstance(m, nn.modules.batchnorm._BatchNorm) for m in model.modules()):
+        return
+    model.train()
+    with torch.no_grad():
+        for i, (x, _) in enumerate(loader):
+            if i >= batches:
+                break
+            model(x.to(device))
 
 
 def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tuple[float, float]:
@@ -54,11 +79,12 @@ def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tup
 def server_main(config: ExperimentConfig, transport: Transport) -> None:
     torch.set_num_threads(1)  # one thread per process; measured faster than multi-thread for this workload
     torch.manual_seed(config.run.seed)
-    device = torch.device("cpu")
+    device = resolve_device(config.run.device)
     model = build_model(config.workload.model).to(device)
     compressor = make_compressor(config.compression)
     param_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
     loader = test_loader(config)
+    stats_loader = worker_loader(config, worker_id=0)  # BN recalibration batches
     writer = EventWriter(config.run.results_dir, config.run.name)
 
     t0 = time.perf_counter()
@@ -81,10 +107,15 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     window: list[dict] = []
     next_control_t = t0 + controller.interval_s if policy is not None else float("inf")
 
+    sync = config.workload.sync
+    num_workers = config.workload.num_workers
+    held_fetches: list[FetchRequest] = []
+    rounds: dict[int, dict[int, object]] = {}  # sync: version -> worker_id -> PushUpdate
+
     writer.write(RunStartEvent(
         event="run_start",
         config_name=config.run.name,
-        num_workers=config.workload.num_workers,
+        num_workers=num_workers,
         dataset=config.workload.dataset,
         model=config.workload.model,
         batch_size=config.workload.batch_size,
@@ -95,6 +126,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
 
     def run_eval() -> None:
         nonlocal last_eval_version, final_acc, final_loss
+        _bn_recalibrate(model, stats_loader, device)
         acc, loss = _evaluate(model, loader, device)
         final_acc, final_loss = acc, loss
         last_eval_version = version
@@ -112,6 +144,26 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         if config.workload.lr_decay_frac > 0
         else None
     )
+
+    def snapshot_response(req: FetchRequest) -> FetchResponse:
+        """Full snapshot only when the worker's copy is stale; a params-less
+        reply otherwise so the worker keeps its local copy (ResNet gradients
+        make full snapshots far too costly to ship unconditionally)."""
+        if req.known_version == version:
+            return FetchResponse(params=None, version=version, compression=compression_for_workers)
+        snapshot = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        return FetchResponse(params=snapshot, version=version, compression=compression_for_workers)
+
+    def release_held_fetches() -> None:
+        nonlocal held_fetches
+        if not held_fetches:
+            return
+        snapshot = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        for req in held_fetches:
+            transport.reply(req.worker_id, FetchResponse(
+                params=snapshot, version=version, compression=compression_for_workers,
+            ))
+        held_fetches = []
 
     while applied < config.workload.max_updates and (time.perf_counter() - t0) < config.workload.max_wall_time_s:
         if policy is not None and time.perf_counter() >= next_control_t:
@@ -149,35 +201,78 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             window = []
             next_control_t += controller.interval_s
 
-        # Answer every pending fetch before considering pushes: workers must
-        # never starve behind update processing.
+        # In sync mode a worker's post-push fetch is held until its round
+        # completes (prevents duplicate compute for the same version), but
+        # fetches from workers still catching up are answered immediately —
+        # otherwise no round could ever complete. A worker whose known version
+        # equals the server's holds the current model whether or not its push
+        # has been processed yet, so known_version == version is race-free.
+        # Async mode never starves.
         while True:
-            worker_id = transport.next_fetch_request(timeout=FETCH_POLL_S)
-            if worker_id is None:
+            req = transport.next_fetch_request(timeout=FETCH_POLL_S)
+            if req is None:
                 break
-            snapshot = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            transport.reply(worker_id, FetchResponse(
-                params=snapshot,
-                version=version,
-                compression=compression_for_workers if policy is not None else None,
-            ))
+            if sync and req.known_version >= version:
+                held_fetches.append(req)
+            else:
+                transport.reply(req.worker_id, snapshot_response(req))
 
         update = transport.next_push(timeout=PUSH_POLL_S)
         if update is None:
             continue
 
         elapsed = time.perf_counter() - t0
+        lr = config.workload.lr
+        if lr_milestone is not None and version >= lr_milestone:
+            lr *= config.workload.lr_gamma
+
+        if sync:
+            round_entries = rounds.setdefault(update.version, {})
+            round_entries[update.worker_id] = update
+            total_bytes += update.payload_bytes
+            stalenesses.append(0)
+            if len(round_entries) < num_workers:
+                continue
+            # round complete: apply the mean of all worker gradients once
+            pieces = list(round_entries.values())
+            params_list = list(model.parameters())
+            decoded_pushes = [compressor.decode(pu.payload, params_list) for pu in pieces]
+            with torch.no_grad():
+                for pi, p in enumerate(params_list):
+                    mean_grad = torch.stack([d[pi].to(p) for d in decoded_pushes]).mean(dim=0)
+                    p.add_(mean_grad, alpha=-lr)
+            version += 1
+            applied += 1
+            rounds.pop(update.version)
+            for pu in pieces:
+                update_event = UpdateEvent(
+                    event="update",
+                    worker_id=pu.worker_id,
+                    version=version,
+                    staleness=0,
+                    payload_bytes=pu.payload_bytes,
+                    fetch_s=pu.fetch_s,
+                    compute_s=pu.compute_s,
+                    decision="accepted",
+                    weight=1.0 / num_workers,
+                    residual_norm=pu.residual_norm,
+                    elapsed_s=elapsed,
+                )
+                writer.write(update_event)
+                window.append(asdict(update_event))
+            release_held_fetches()
+            if version - last_eval_version >= config.workload.eval_interval:
+                run_eval()
+            continue
+
         tau = version - update.version
         stalenesses.append(tau)
         decision = decide(tau, effective_staleness)
         if decision.accept:
             decoded = compressor.decode(update.payload, list(model.parameters()))
-            lr = config.workload.lr
-            if lr_milestone is not None and version >= lr_milestone:
-                lr *= config.workload.lr_gamma
             with torch.no_grad():
                 for p, g in zip(model.parameters(), decoded):
-                    p.add_(g.to(p.dtype), alpha=-lr * decision.weight)
+                    p.add_(g.to(p), alpha=-lr * decision.weight)
             version += 1
             applied += 1
             kind = "downweighted" if decision.weight < 1.0 else "accepted"
@@ -204,12 +299,16 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         if version - last_eval_version >= config.workload.eval_interval:
             run_eval()
 
-    # Workers blocked on a fetch must hear a stop before this process exits.
+    # Workers blocked on a fetch must hear a stop before this process exits:
+    # both late async fetches and sync fetches still held for an incomplete round.
     shutdown_start = time.perf_counter()
     while time.perf_counter() - shutdown_start < SHUTDOWN_GRACE_S:
-        worker_id = transport.next_fetch_request(timeout=0.05)
-        if worker_id is not None:
-            transport.reply(worker_id, FetchResponse(params=None, version=STOP_VERSION, stop=True))
+        req = transport.next_fetch_request(timeout=0.05)
+        if req is not None:
+            transport.reply(req.worker_id, FetchResponse(params=None, version=STOP_VERSION, stop=True))
+        for held in held_fetches:
+            transport.reply(held.worker_id, FetchResponse(params=None, version=STOP_VERSION, stop=True))
+        held_fetches = []
 
     elapsed = time.perf_counter() - t0
     raw_bytes = param_bytes * len(stalenesses)
