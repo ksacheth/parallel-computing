@@ -19,13 +19,18 @@ STOP_VERSION = -1
 
 
 @dataclass
-class FetchResponse:
-    """Reply to a worker fetch: a snapshot of the server model and its version.
+class FetchRequest:
+    """A worker's request for the current model; carries the version it already
+    holds so the server can skip shipping an unchanged snapshot."""
 
-    ``compression`` carries the server's current compression setting when the
-    controller is enabled (None otherwise); workers rebuild their compressor
-    when it differs from their own.
-    """
+    worker_id: int
+    known_version: int
+
+
+@dataclass
+class FetchResponse:
+    """Reply to a worker fetch. ``params`` is None either for a stop signal or
+    when the worker's snapshot is already current (keep the local copy)."""
 
     params: dict[str, torch.Tensor] | None
     version: int
@@ -65,8 +70,8 @@ class Transport:
 
     # ---- worker side ----
 
-    def fetch(self, worker_id: int) -> FetchResponse:
-        self.fetch_requests.put(worker_id)
+    def fetch(self, worker_id: int, known_version: int) -> FetchResponse:
+        self.fetch_requests.put(FetchRequest(worker_id=worker_id, known_version=known_version))
         return self.replies[worker_id].get()
 
     def push(self, update: PushUpdate) -> None:
@@ -76,7 +81,7 @@ class Transport:
 
     # ---- server side ----
 
-    def next_fetch_request(self, timeout: float) -> int | None:
+    def next_fetch_request(self, timeout: float) -> FetchRequest | None:
         try:
             return self.fetch_requests.get(timeout=timeout)
         except queue.Empty:
