@@ -62,7 +62,7 @@ class IdentityCompressor:
         return [DensePiece(g.detach().clone()) for g in grads]
 
     def decode(self, payload: list[Piece], like: Sequence[torch.Tensor]) -> list[torch.Tensor]:
-        return [p.values.clone() for p in payload]
+        return [p.values.to(ref).clone() for p, ref in zip(payload, like)]
 
     def encoded_bytes(self, payload: list[Piece]) -> int:
         return sum(p.values.numel() * p.values.element_size() for p in payload)
@@ -96,8 +96,11 @@ class TopKCompressor:
     def decode(self, payload: list[Piece], like: Sequence[torch.Tensor]) -> list[torch.Tensor]:
         out: list[torch.Tensor] = []
         for piece, ref in zip(payload, like):
+            # payloads may arrive on CPU from the transport; move to the
+            # reference parameter's device before scattering
             dense = torch.zeros_like(ref)
-            dense.reshape(-1)[piece.indices.to(torch.int64)] = piece.values.to(ref.dtype)
+            idx = piece.indices.to(torch.int64).to(ref.device)
+            dense.reshape(-1)[idx] = piece.values.to(ref)
             out.append(dense)
         return out
 
@@ -142,8 +145,8 @@ class QuantizeCompressor:
     def decode(self, payload: list[Piece], like: Sequence[torch.Tensor]) -> list[torch.Tensor]:
         out: list[torch.Tensor] = []
         for piece, ref in zip(payload, like):
-            restored = piece.codes.to(torch.float32) * piece.scale
-            out.append(restored.reshape(ref.shape).to(ref.dtype))
+            restored = piece.codes.to(torch.float32).to(ref.device) * piece.scale.to(ref.device)
+            out.append(restored.reshape(ref.shape).to(ref))
         return out
 
     def encoded_bytes(self, payload: list[Piece]) -> int:

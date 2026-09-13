@@ -16,6 +16,13 @@ class RunConfig:
     seed: int = 0
     results_dir: str = "results"
     data_root: str = "data"
+    device: str = "auto"  # auto | cpu | cuda
+
+
+def resolve_device(device: str) -> torch.device:
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
 
 
 @dataclass
@@ -31,6 +38,7 @@ class WorkloadConfig:
     max_wall_time_s: float = 600.0
     eval_interval: int = 50
     target_accuracy: float | None = None
+    sync: bool = False  # synchronous SGD: apply the mean of all worker gradients per round
 
 
 @dataclass
@@ -88,6 +96,9 @@ class ControllerConfig:
     enabled: bool = False
     interval_s: float = 30.0
     policy: str = "threshold"  # threshold | score
+    # per-knob switches for the ablation matrix: hold one control fixed
+    adapt_compression: bool = True
+    adapt_staleness: bool = True
     # threshold policy: instability tolerances and the communication-pressure
     # point (bytes/s) above which stable training justifies stronger compression
     worsen_tol: float = 0.01
