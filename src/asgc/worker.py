@@ -24,7 +24,7 @@ def worker_main(config: ExperimentConfig, worker_id: int, transport: Transport) 
     seed_everything(config.run.seed + 1000 + worker_id)
     model = build_model(config.workload.model)
     model.train()
-    compressor = make_compressor(config.compression.mode)
+    compressor = make_compressor(config.compression)
     batches = cycle(worker_loader(config, worker_id))
     criterion = nn.CrossEntropyLoss()
 

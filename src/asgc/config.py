@@ -46,6 +46,8 @@ class HeterogeneityConfig:
 @dataclass
 class CompressionConfig:
     mode: str = "identity"  # identity | topk | quantize
+    rho: float = 0.25  # topk active fraction k/d
+    bits: int = 8  # quantize bit width (levels = 2^(bits-1) - 1)
 
 
 @dataclass

@@ -53,7 +53,8 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
     torch.manual_seed(config.run.seed)
     device = torch.device("cpu")
     model = build_model(config.workload.model).to(device)
-    compressor = make_compressor(config.compression.mode)
+    compressor = make_compressor(config.compression)
+    param_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
     loader = test_loader(config)
     writer = EventWriter(config.run.results_dir, config.run.name)
 
@@ -116,7 +117,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         stalenesses.append(tau)
         decision = decide(tau, config.staleness)
         if decision.accept:
-            decoded = compressor.decode(update.payload)
+            decoded = compressor.decode(update.payload, list(model.parameters()))
             lr = config.workload.lr
             if lr_milestone is not None and version >= lr_milestone:
                 lr *= config.workload.lr_gamma
@@ -154,12 +155,15 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
             transport.reply(worker_id, FetchResponse(params=None, version=STOP_VERSION, stop=True))
 
     elapsed = time.perf_counter() - t0
+    raw_bytes = param_bytes * len(stalenesses)
     writer.write(RunEndEvent(
         event="run_end",
         applied_updates=applied,
         rejected_updates=rejected,
         rejected_frac=rejected / len(stalenesses) if stalenesses else 0.0,
         total_bytes=total_bytes,
+        raw_bytes=raw_bytes,
+        compression_ratio=raw_bytes / total_bytes if total_bytes else 1.0,
         updates_per_sec=applied / elapsed if elapsed > 0 else 0.0,
         elapsed_s=elapsed,
         mean_staleness=sum(stalenesses) / len(stalenesses) if stalenesses else 0.0,
