@@ -32,4 +32,8 @@ class SmallCNN(nn.Module):
 def build_model(name: str) -> nn.Module:
     if name == "small_cnn":
         return SmallCNN()
+    if name == "resnet18":
+        from asgc.models.resnet_cifar import ResNet18
+
+        return ResNet18()
     raise ValueError(f"unknown model: {name!r}")

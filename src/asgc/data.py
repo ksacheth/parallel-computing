@@ -7,23 +7,39 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, Subset, TensorDataset
 from torchvision import datasets, transforms
+from torchvision.transforms import Compose, RandomCrop, RandomHorizontalFlip
 
 from asgc.config import ExperimentConfig
 
 _NORMALIZATION = {
     "fashion_mnist": ((0.2860,), (0.3530,)),
+    "cifar10": ((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+}
+
+# light standard augmentation for CIFAR training; eval never augments
+_TRAIN_AUGMENTATION = {
+    "cifar10": lambda: Compose([RandomCrop(32, padding=4), RandomHorizontalFlip()]),
 }
 
 
-def _transform(dataset: str) -> transforms.Compose:
+def _transform(dataset: str, train: bool) -> Compose:
     mean, std = _NORMALIZATION[dataset]
-    return transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
+    parts = []
+    if train and dataset in _TRAIN_AUGMENTATION:
+        parts.append(_TRAIN_AUGMENTATION[dataset]())
+    parts.append(transforms.ToTensor())
+    parts.append(transforms.Normalize(mean, std))
+    return Compose(parts)
 
 
 def _load(dataset: str, root: str) -> tuple[Any, Any]:
     if dataset == "fashion_mnist":
-        train = datasets.FashionMNIST(root, train=True, download=True, transform=_transform(dataset))
-        test = datasets.FashionMNIST(root, train=False, download=True, transform=_transform(dataset))
+        train = datasets.FashionMNIST(root, train=True, download=True, transform=_transform(dataset, train=True))
+        test = datasets.FashionMNIST(root, train=False, download=True, transform=_transform(dataset, train=False))
+        return train, test
+    if dataset == "cifar10":
+        train = datasets.CIFAR10(root, train=True, download=True, transform=_transform(dataset, train=True))
+        test = datasets.CIFAR10(root, train=False, download=True, transform=_transform(dataset, train=False))
         return train, test
     raise ValueError(f"unknown dataset: {dataset!r}")
 
