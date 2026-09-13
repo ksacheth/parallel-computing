@@ -104,6 +104,40 @@ def test_make_policy_rejects_unknown_names():
         make_policy(ControllerConfig(enabled=True, policy="wizard"), mode="topk")
 
 
+def _events_with_eval_losses(losses):
+    events = []
+    t = 0.0
+    for i, loss in enumerate(losses):
+        events.append({"event": "eval", "version": i, "test_loss": loss, "test_accuracy": 0.5, "elapsed_s": t})
+        t += 5.0
+    for i in range(6):
+        events.append({
+            "event": "update", "version": i, "staleness": 1, "decision": "accepted",
+            "payload_bytes": 100_000, "residual_norm": 0.2, "elapsed_s": t,
+        })
+        t += 1.0
+    return events
+
+
+def test_variability_signal_ignores_fast_monotone_progress():
+    stats = compute_window_stats(_events_with_eval_losses((2.0, 1.0, 0.5, 0.3)))
+    assert stats.loss_variability == 0.0, "any monotone decay, however steep or convex, must read as stable"
+
+
+def test_variability_signal_flags_rebounds():
+    stats = compute_window_stats(_events_with_eval_losses((0.5, 0.9, 0.5, 0.9)))
+    assert stats.loss_variability > 0.1, "loss bouncing back up between evals must read as instability"
+
+
+def test_persistence_requires_consecutive_unstable_windows():
+    config = ControllerConfig(enabled=True, instability_persistence=2)
+    policy = ThresholdPolicy(config, mode="topk")
+    first = policy.decide(make_stats(loss_trend=0.05), value=0.25, s_max=4)
+    assert first.value == 0.25 and first.s_max == 4, "first unstable window must hold"
+    second = policy.decide(make_stats(loss_trend=0.05), value=0.25, s_max=4)
+    assert second.value == 0.30 and second.s_max == 3, "second consecutive window must move safer"
+
+
 def test_adaptive_gate_adapts_within_bounds_and_converges():
     config = load_config(ADAPTIVE_CONFIG)
     assert config.controller.enabled and config.controller.policy == "threshold"

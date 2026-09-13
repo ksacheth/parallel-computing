@@ -13,6 +13,22 @@ from dataclasses import dataclass
 from asgc.config import ControllerConfig
 
 
+def _mean_rebound(losses: list[float]) -> float:
+    """Average upward move between consecutive evals in the window.
+
+    'Fast progress' and 'oscillation' both create large raw loss spread, and
+    convex decay defeats linear detrending; what actually distinguishes
+    instability is the loss *bouncing back up* between evaluations. Monotone
+    or decaying sequences read 0.0 regardless of steepness; rebounds count at
+    their magnitude (loss units, matching variability_tol), averaged over all
+    eval steps so a single spike cannot dominate. Fewer than two evals read 0.0.
+    """
+    if len(losses) < 2:
+        return 0.0
+    steps = [b - a for a, b in zip(losses, losses[1:])]
+    return sum(max(0.0, d) for d in steps) / len(steps)
+
+
 @dataclass
 class WindowStats:
     loss_trend: float  # eval-loss change across the window; positive = worsening
@@ -34,7 +50,7 @@ def compute_window_stats(events: list[dict]) -> WindowStats:
     residuals = [e["residual_norm"] for e in updates]
     return WindowStats(
         loss_trend=losses[-1] - losses[0] if len(losses) >= 2 else 0.0,
-        loss_variability=statistics.pstdev(losses) if len(losses) >= 2 else 0.0,
+        loss_variability=_mean_rebound(losses),
         mean_staleness=sum(e["staleness"] for e in updates) / len(updates) if updates else 0.0,
         rejected_frac=sum(e["decision"] == "rejected" for e in updates) / len(updates) if updates else 0.0,
         bytes_per_s=sum(e["payload_bytes"] for e in updates) / span,
@@ -64,6 +80,7 @@ class ThresholdPolicy:
     def __init__(self, config: ControllerConfig, mode: str) -> None:
         self.c = config
         self.mode = mode
+        self._unstable_streak = 0
 
     def decide(self, stats: WindowStats, value: float, s_max: int) -> ControlDecision:
         c = self.c
@@ -74,11 +91,19 @@ class ThresholdPolicy:
             or stats.rejected_frac > c.reject_frac_max
         )
         if unstable:
+            self._unstable_streak += 1
+            if self._unstable_streak < c.instability_persistence:
+                return ControlDecision(
+                    value=value,
+                    s_max=s_max,
+                    reason=f"hold (unstable {self._unstable_streak}/{c.instability_persistence})",
+                )
             return ControlDecision(
                 value=min(value + delta, hi) if c.adapt_compression else value,
                 s_max=max(s_max - c.max_delta_s_max, c.s_max_bounds[0]) if c.adapt_staleness else s_max,
                 reason="instability",
             )
+        self._unstable_streak = 0
         if stats.bytes_per_s >= c.comm_pressure_min:
             return ControlDecision(
                 value=max(value - delta, lo) if c.adapt_compression else value,
