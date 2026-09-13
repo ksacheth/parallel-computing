@@ -44,6 +44,10 @@ Piece = DensePiece | SparsePiece | QuantizedPiece
 
 
 class Compressor(Protocol):
+    """Implementations must keep decode a pure function of (payload, like):
+    the worker decodes its own payload to maintain its error-feedback
+    residual and must see exactly what the server reconstructs."""
+
     def encode(self, grads: list[torch.Tensor]) -> list[Piece]: ...
 
     def decode(self, payload: list[Piece], like: Sequence[torch.Tensor]) -> list[torch.Tensor]: ...

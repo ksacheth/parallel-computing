@@ -31,10 +31,11 @@ class PushUpdate:
 
     worker_id: int
     version: int
-    payload: list[torch.Tensor]
+    payload: list
     payload_bytes: int
     fetch_s: float = 0.0
     compute_s: float = 0.0
+    residual_norm: float = 0.0  # error-feedback residual L2 norm; 0.0 when EF disabled
 
 
 class Transport:
