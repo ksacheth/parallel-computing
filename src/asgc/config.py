@@ -99,6 +99,9 @@ class ControllerConfig:
     # per-knob switches for the ablation matrix: hold one control fixed
     adapt_compression: bool = True
     adapt_staleness: bool = True
+    # require N consecutive unstable windows before moving safer (hysteresis);
+    # 1 preserves the original single-window behavior
+    instability_persistence: int = 1
     # threshold policy: instability tolerances and the communication-pressure
     # point (bytes/s) above which stable training justifies stronger compression
     worsen_tol: float = 0.01
