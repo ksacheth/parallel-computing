@@ -121,6 +121,7 @@ def server_main(config: ExperimentConfig, transport: Transport) -> None:
         batch_size=config.workload.batch_size,
         compute_delay=dict(config.heterogeneity.compute_delay),
         comm_delay_ms=config.heterogeneity.comm_delay_ms,
+        bandwidth_mbps=config.heterogeneity.bandwidth_mbps,
         started_at=time.time(),
     ))
 

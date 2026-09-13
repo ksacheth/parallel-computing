@@ -26,7 +26,11 @@ def main() -> None:
     prepare_datasets(config)  # download from the parent so children never race
 
     ctx = mp.get_context("spawn")
-    transport = Transport(ctx, comm_delay_s=config.heterogeneity.comm_delay_ms / 1000.0)
+    transport = Transport(
+        ctx,
+        comm_delay_s=config.heterogeneity.comm_delay_ms / 1000.0,
+        bandwidth_bps=config.heterogeneity.bandwidth_mbps * 125_000.0,
+    )
     for worker_id in range(config.workload.num_workers):
         transport.register_worker(worker_id)
 

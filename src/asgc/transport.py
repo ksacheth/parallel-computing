@@ -51,6 +51,17 @@ class PushUpdate:
     residual_norm: float = 0.0  # error-feedback residual L2 norm; 0.0 when EF disabled
 
 
+def push_delay_s(update: PushUpdate, comm_delay_s: float, bandwidth_bps: float) -> float:
+    """Send delay for one push: the flat link delay plus the byte-proportional
+    time the payload occupies the up-link at the configured bandwidth. Only the
+    measured gradient up-link is charged — down-link model snapshots are
+    identical across methods and would add a constant to every comparison."""
+    delay = comm_delay_s
+    if bandwidth_bps > 0:
+        delay += update.payload_bytes / bandwidth_bps
+    return delay
+
+
 class Transport:
     """Queue-based transport for one server and N workers on a single machine.
 
@@ -58,8 +69,14 @@ class Transport:
     which is required under the Windows spawn start method.
     """
 
-    def __init__(self, ctx: mp.context.BaseContext, comm_delay_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        ctx: mp.context.BaseContext,
+        comm_delay_s: float = 0.0,
+        bandwidth_bps: float = 0.0,
+    ) -> None:
         self.comm_delay_s = comm_delay_s
+        self.bandwidth_bps = bandwidth_bps
         self._ctx = ctx
         self.fetch_requests: mp.Queue = ctx.Queue()
         self.pushes: mp.Queue = ctx.Queue()
@@ -75,8 +92,9 @@ class Transport:
         return self.replies[worker_id].get()
 
     def push(self, update: PushUpdate) -> None:
-        if self.comm_delay_s > 0:
-            time.sleep(self.comm_delay_s)
+        delay = push_delay_s(update, self.comm_delay_s, self.bandwidth_bps)
+        if delay > 0:
+            time.sleep(delay)
         self.pushes.put(update)
 
     # ---- server side ----

@@ -21,6 +21,7 @@ class RunStartEvent:
     batch_size: int
     compute_delay: dict[int, float]
     comm_delay_ms: float
+    bandwidth_mbps: float
     started_at: float
 
 

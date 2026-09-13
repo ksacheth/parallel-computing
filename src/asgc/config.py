@@ -46,6 +46,10 @@ class HeterogeneityConfig:
     # worker id -> artificial compute delay in seconds; missing workers run undelayed
     compute_delay: dict[int, float] = field(default_factory=dict)
     comm_delay_ms: float = 0.0
+    # byte-proportional up-link constraint: each push sleeps payload_bytes /
+    # (bandwidth_mbps * 125000) seconds; 0 disables. Models a bandwidth-limited
+    # network so compression converts directly into wall-clock savings.
+    bandwidth_mbps: float = 0.0
 
     def worker_delay(self, worker_id: int) -> float:
         return self.compute_delay.get(worker_id, 0.0)
