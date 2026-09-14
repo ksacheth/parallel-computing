@@ -95,6 +95,20 @@ The final stage: everything the evaluation needs. CIFAR-10 + ResNet-18 as the ma
 - **The rebound-fixed controller adapted cleanly on CIFAR**: zero false instability trips across 40 logged decisions, ρ 0.25 → 0.05 (bound) and s_max 4 → 10 within 2 minutes, holding the extreme-compression operating point stably. It delivered 8.13× compression — 4× less data than fixed Top-K — but paid 2.4 accuracy points.
 - **Concrete tuning item surfaced by the slice**: with `rho_bounds` floored at 0.05, the controller compresses past the accuracy knee on CIFAR, missing the "within 1 point of the strongest non-adaptive baseline" gate (83.72 vs 86.14). Raising the floor to ≈0.10–0.15 — or giving the controller an accuracy-drop signal — is the next tuning step. Also noted: with `eval_interval: 500` and a 30 s control interval, most control windows contained at most one eval, so the controller ran on system signals only; the control interval should track the eval cadence on CIFAR budgets.
 
+## CIFAR-10 slice under a 250 Mbps up-link (same four methods, byte-proportional send delay)
+
+| run | acc | wall time | t→0.80 | GB | CR |
+|---|---|---|---|---|---|
+| plain async | 86.01% | 70.4 min | 41.1 min | 268.2 | 1.0× |
+| fixed Top-K | 84.60% | 54.0 min | 24.2 min | 134.1 | 2.0× |
+| **Top-K + EF** | **86.50%** | **48.8 min** | **20.5 min** | 134.1 | 2.0× |
+| adaptive | 83.76% | **26.7 min** | **13.7 min** | **29.8** | **9.01×** |
+
+- **The bandwidth experiment completes the argument.** With a byte-proportional up-link, Top-K + EF beats plain async on *every* axis: +0.5 points accuracy, 31% less wall-clock, half the bytes, and it reaches 0.80 accuracy 1.98× sooner (20.5 vs 41.1 min). The unconstrained table's one weakness — plain async ruling the time columns — was an artifact of a free network, and the constrained rerun is the realistic deployment regime.
+- **The adaptive method's throughput rose during the run** (1.4 → 3.75 updates/s) as the controller compressed harder under pressure — it literally bought wall-clock time with compression, finishing 2.6× faster than plain async at 9× compression. Its accuracy still trails (83.76%, the ρ-floor tuning item above), so the frontier point it chose optimizes communication at accuracy's expense.
+- **Zero instability in all four constrained runs** (max eval-to-eval accuracy drop ≤ 0.27 points).
+- Operational note: a mid-experiment system suspension left overlapping experiment chains competing for the GPU (reads of ~0.01 upd/s) and one unkillable orphaned multiprocessing child (PID visible in task manager, harmless but burns a core; a reboot clears it). All bandwidth results above come from clean single-chain relaunches.
+
 ## Definition of Done
 
 - `pytest tests/ -q` green with the new model, sync, and controller-flag tests plus all five prior gates.
