@@ -9,6 +9,7 @@ Public API:
 """
 from __future__ import annotations
 
+from torch_asgc import plugins
 from torch_asgc.client import ASGCClient, connect, connect as init_client
 from torch_asgc.compression import make_compressor
 from torch_asgc.controller import AdaptiveConfig
@@ -31,4 +32,5 @@ __all__ = [
     "AdaptiveConfig",
     "LocalTransportHub",
     "make_compressor",
+    "plugins",
 ]
