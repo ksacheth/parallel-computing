@@ -38,7 +38,9 @@ class ParameterServer:
         self.running = True
 
         # Initialize transport
-        if transport is not None:
+        if isinstance(transport, LocalTransportHub):
+            self.transport = LocalTransportServer(transport)
+        elif transport is not None:
             self.transport = transport
         elif isinstance(bind_address, LocalTransportHub):
             self.transport = LocalTransportServer(bind_address)

@@ -86,14 +86,29 @@ class DistributedOptimizer(Optimizer):
         self,
         closure: Callable[[], float] | None = None,
         loss_val: float | None = None,
+        scaler: Any | None = None,
     ) -> float | None:
-        """Perform a distributed optimization step."""
+        """Perform a distributed optimization step.
+
+        Args:
+            closure: Optional closure function for reevaluating the model.
+            loss_val: Optional loss scalar value for adaptive telemetry.
+            scaler: Optional PyTorch GradScaler instance. If provided, gradients
+                will be unscaled before compression and checked for Inf/NaN.
+        """
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
                 if loss_val is None and isinstance(loss, (torch.Tensor, float)):
                     loss_val = float(loss)
+
+        # Handle optional GradScaler unscaling
+        if scaler is not None and getattr(scaler, "is_enabled", lambda: True)():
+            try:
+                scaler.unscale_(self)
+            except RuntimeError:
+                pass  # already unscaled by caller
 
         # Micro-Local Steps: compute locally until synchronization boundary
         self._local_step_counter += 1
@@ -103,11 +118,18 @@ class DistributedOptimizer(Optimizer):
 
         self._local_step_counter = 0
 
+        # Check for NaN / Inf overflow across all buckets (crucial under mixed precision)
+        flattened_list: list[torch.Tensor] = []
+        for bucket in self.buckets:
+            flat_g = bucket.flatten(self.params_dict)
+            if not torch.isfinite(flat_g).all():
+                # Non-finite gradient (overflow in AMP): skip step to protect model
+                return None
+            flattened_list.append(flat_g)
+
         # 1. Process all buckets for this logical step
         bucket_payloads: list[BucketPayload] = []
-        for idx, (bucket, ef) in enumerate(zip(self.buckets, self.ef_managers)):
-            flat_g = bucket.flatten(self.params_dict)
-
+        for idx, (bucket, ef, flat_g) in enumerate(zip(self.buckets, self.ef_managers, flattened_list)):
             # Error feedback accumulation: u = g + e
             u = ef.accumulate(flat_g)
 
