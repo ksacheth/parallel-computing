@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from torch_asgc.transport.base import (
+    BucketPayload,
     FetchRequest,
     FetchResponse,
     PushAck,
@@ -31,6 +32,21 @@ class ASGCClient:
             self.known_version = resp.version
         return resp
 
+    def push_step(
+        self,
+        version: int,
+        buckets: list[BucketPayload],
+        loss_val: float | None = None,
+    ) -> PushAck:
+        """Push a unified logical step containing all buckets to the server."""
+        update = PushUpdate(
+            worker_id=self.worker_id,
+            version=version,
+            buckets=buckets,
+            loss_val=loss_val,
+        )
+        return self.transport.push(update)
+
     def push_update(
         self,
         bucket_index: int,
@@ -40,18 +56,14 @@ class ASGCClient:
         loss_val: float | None = None,
         residual_norm: float = 0.0,
     ) -> PushAck:
-        """Push a compressed gradient bucket to the server and receive acknowledgment."""
-        update = PushUpdate(
-            worker_id=self.worker_id,
+        """Push a single compressed gradient bucket (convenience method)."""
+        bucket = BucketPayload(
             bucket_index=bucket_index,
-            version=version,
             payload=payload,
             payload_bytes=payload_bytes,
-            loss_val=loss_val,
             residual_norm=residual_norm,
         )
-        ack = self.transport.push(update)
-        return ack
+        return self.push_step(version=version, buckets=[bucket], loss_val=loss_val)
 
     def close(self) -> None:
         self.transport.close()

@@ -20,6 +20,7 @@ from torch_asgc.client import ASGCClient
 from torch_asgc.compression import make_compressor
 from torch_asgc.engine.bucketing import create_buckets
 from torch_asgc.engine.residual import ErrorFeedbackManager
+from torch_asgc.transport.base import BucketPayload
 
 
 class DistributedOptimizer(Optimizer):
@@ -102,7 +103,8 @@ class DistributedOptimizer(Optimizer):
 
         self._local_step_counter = 0
 
-        # 1. Process each bucket
+        # 1. Process all buckets for this logical step
+        bucket_payloads: list[BucketPayload] = []
         for idx, (bucket, ef) in enumerate(zip(self.buckets, self.ef_managers)):
             flat_g = bucket.flatten(self.params_dict)
 
@@ -117,32 +119,38 @@ class DistributedOptimizer(Optimizer):
             reconstructed = self.compressor.decode(payload, target_device=bucket.device)
             ef.record_tentative(u, reconstructed)
 
-            # Push to Parameter Server
-            ack = self.client.push_update(
-                bucket_index=idx,
-                version=self.last_sync_version,
-                payload=payload,
-                payload_bytes=payload_bytes,
-                loss_val=loss_val,
-                residual_norm=ef.norm(),
+            bucket_payloads.append(
+                BucketPayload(
+                    bucket_index=idx,
+                    payload=payload,
+                    payload_bytes=payload_bytes,
+                    residual_norm=ef.norm(),
+                )
             )
 
-            # Transactional safety:
-            if ack.status == "rejected":
-                # Rollback residual: retain unapplied gradient mass
+        # 2. Push unified step containing all buckets to Parameter Server
+        ack = self.client.push_step(
+            version=self.last_sync_version,
+            buckets=bucket_payloads,
+            loss_val=loss_val,
+        )
+
+        # 3. Transactional safety across all buckets
+        if ack.status == "rejected":
+            for ef in self.ef_managers:
                 ef.rollback()
-            else:
-                # Commit tentative residual
+        else:
+            for ef in self.ef_managers:
                 ef.commit()
 
-            # Adapt compression setting if updated by server controller
-            if ack.compression_setting is not None:
-                if self.compression_mode == "topk" and ack.compression_setting != self.current_rho:
-                    self.current_rho = ack.compression_setting
-                    self.compressor = make_compressor("topk", rho=self.current_rho)
-                elif self.compression_mode in ("quantize", "qsgd") and int(ack.compression_setting) != self.current_bits:
-                    self.current_bits = int(ack.compression_setting)
-                    self.compressor = make_compressor("quantize", bits=self.current_bits)
+        # Adapt compression setting if updated by server controller
+        if ack.compression_setting is not None:
+            if self.compression_mode == "topk" and ack.compression_setting != self.current_rho:
+                self.current_rho = ack.compression_setting
+                self.compressor = make_compressor("topk", rho=self.current_rho)
+            elif self.compression_mode in ("quantize", "qsgd") and int(ack.compression_setting) != self.current_bits:
+                self.current_bits = int(ack.compression_setting)
+                self.compressor = make_compressor("quantize", bits=self.current_bits)
 
         # 2. Synchronize model parameters from parameter server
         resp = self.client.fetch_parameters()

@@ -8,16 +8,67 @@ import torch
 
 
 @dataclass
-class PushUpdate:
-    """A compressed gradient bucket push from a worker."""
+class BucketPayload:
+    """Compressed gradient payload for one gradient bucket."""
 
-    worker_id: str
     bucket_index: int
-    version: int
     payload: Any
     payload_bytes: int
-    loss_val: float | None = None
     residual_norm: float = 0.0
+
+
+class PushUpdate:
+    """A unified logical step push from a worker containing one or more buckets."""
+
+    def __init__(
+        self,
+        worker_id: str,
+        version: int,
+        buckets: list[BucketPayload] | None = None,
+        loss_val: float | None = None,
+        # Backward-compatibility arguments for single-bucket pushes:
+        bucket_index: int | None = None,
+        payload: Any = None,
+        payload_bytes: int = 0,
+        residual_norm: float = 0.0,
+    ) -> None:
+        self.worker_id = worker_id
+        self.version = version
+        self.loss_val = loss_val
+        if buckets is not None:
+            self.buckets = buckets
+        elif bucket_index is not None:
+            self.buckets = [
+                BucketPayload(
+                    bucket_index=bucket_index,
+                    payload=payload,
+                    payload_bytes=payload_bytes,
+                    residual_norm=residual_norm,
+                )
+            ]
+        else:
+            self.buckets = []
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(b.payload_bytes for b in self.buckets)
+
+    # Backward-compatible convenience properties
+    @property
+    def bucket_index(self) -> int:
+        return self.buckets[0].bucket_index if self.buckets else 0
+
+    @property
+    def payload(self) -> Any:
+        return self.buckets[0].payload if self.buckets else None
+
+    @property
+    def payload_bytes(self) -> int:
+        return self.total_bytes
+
+    @property
+    def residual_norm(self) -> float:
+        return self.buckets[0].residual_norm if self.buckets else 0.0
 
 
 @dataclass

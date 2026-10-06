@@ -158,17 +158,20 @@ class ParameterServer:
             decision = decide_staleness(tau, self.staleness_config)
 
             if decision.accept:
-                # Decode update onto appropriate bucket
-                bucket = self.buckets[push_up.bucket_index]
-                decoded_flat = self.compressor.decode(push_up.payload, target_device=bucket.device)
-                unflattened = bucket.unflatten_to_dict(decoded_flat)
-
                 old_params = None
                 if self.enable_delta_broadcast:
                     old_params = {name: p.detach().clone() for name, p in self.trainable_params}
 
-                # Apply to server model with staleness downweighting
-                self.server_optimizer.step_with_gradients(unflattened, weight=decision.weight)
+                # Decode and combine gradients from all buckets in this logical step
+                unflattened_step_grads: dict[str, torch.Tensor] = {}
+                for b_item in push_up.buckets:
+                    bucket = self.buckets[b_item.bucket_index]
+                    decoded_flat = self.compressor.decode(b_item.payload, target_device=bucket.device)
+                    unflattened_bucket = bucket.unflatten_to_dict(decoded_flat)
+                    unflattened_step_grads.update(unflattened_bucket)
+
+                # Apply all bucket gradients together with staleness downweighting
+                self.server_optimizer.step_with_gradients(unflattened_step_grads, weight=decision.weight)
 
                 if self.enable_delta_broadcast and old_params is not None:
                     step_delta = {
@@ -180,13 +183,14 @@ class ParameterServer:
                     min_keep = self.version - self.max_delta_history
                     self._delta_history = {v: d for v, d in self._delta_history.items() if v >= min_keep}
 
+                # Increment server version exactly once for the entire logical step
                 self.version += 1
 
-            # Telemetry logging
+            # Telemetry logging for the logical step
             self.telemetry.add_update(
                 staleness=tau,
                 accepted=decision.accept,
-                num_bytes=push_up.payload_bytes,
+                num_bytes=push_up.total_bytes,
             )
             if push_up.loss_val is not None:
                 self.telemetry.add_loss(push_up.loss_val)
