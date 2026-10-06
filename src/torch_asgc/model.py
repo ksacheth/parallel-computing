@@ -25,6 +25,12 @@ class DistributedModel(nn.Module):
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         return self.module(*args, **kwargs)
 
+    def named_parameters(self, *args: Any, **kwargs: Any) -> Any:
+        return self.module.named_parameters(*args, **kwargs)
+
+    def parameters(self, *args: Any, **kwargs: Any) -> Any:
+        return self.module.parameters(*args, **kwargs)
+
     def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return self.module.state_dict(*args, **kwargs)
 

@@ -35,6 +35,7 @@ class DistributedOptimizer(Optimizer):
         bits: int = 8,
         error_feedback: bool = True,
         bucket_cap_mb: float = 25.0,
+        local_steps: int = 1,
     ) -> None:
         self.base_optimizer = base_optimizer
         self.model = model
@@ -60,6 +61,10 @@ class DistributedOptimizer(Optimizer):
 
         self.params_dict = {name: p for name, p in model.named_parameters() if p.requires_grad}
         self.last_sync_version = -1
+
+        # Micro-Local Steps
+        self.local_steps = max(1, local_steps)
+        self._local_step_counter = 0
 
     @property
     def param_groups(self) -> list[dict[str, Any]]:
@@ -88,6 +93,14 @@ class DistributedOptimizer(Optimizer):
                 loss = closure()
                 if loss_val is None and isinstance(loss, (torch.Tensor, float)):
                     loss_val = float(loss)
+
+        # Micro-Local Steps: compute locally until synchronization boundary
+        self._local_step_counter += 1
+        if self._local_step_counter < self.local_steps:
+            self.base_optimizer.step(closure=closure)
+            return loss
+
+        self._local_step_counter = 0
 
         # 1. Process each bucket
         for idx, (bucket, ef) in enumerate(zip(self.buckets, self.ef_managers)):
@@ -133,7 +146,15 @@ class DistributedOptimizer(Optimizer):
 
         # 2. Synchronize model parameters from parameter server
         resp = self.client.fetch_parameters()
-        if resp.params is not None:
+        if resp.is_delta and resp.delta is not None:
+            # In-place add delta directly to parameters (zero load_state_dict overhead)
+            with torch.no_grad():
+                for name, p in self.model.named_parameters():
+                    if name in resp.delta:
+                        d = resp.delta[name].to(device=p.device, dtype=p.dtype)
+                        p.add_(d)
+            self.last_sync_version = resp.version
+        elif resp.params is not None:
             # Update local parameters from server snapshot
             self.model.load_state_dict(resp.params)
             self.last_sync_version = resp.version

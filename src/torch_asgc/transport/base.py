@@ -44,7 +44,9 @@ class FetchResponse:
     """Server response containing model weights or deltas."""
 
     version: int
-    params: dict[str, torch.Tensor] | None  # None if worker already has latest
+    params: dict[str, torch.Tensor] | None = None  # Full snapshot fallback
+    delta: dict[str, torch.Tensor] | None = None  # Accumulated parameter delta dictionary
+    is_delta: bool = False
     stop: bool = False
     compression_setting: float | None = None
     s_max: int | None = None

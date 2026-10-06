@@ -77,6 +77,11 @@ class ParameterServer:
         self.telemetry = TelemetryWindow()
         self._last_control_time = time.perf_counter()
 
+        # Downlink Delta History Buffer
+        self.enable_delta_broadcast = True
+        self.max_delta_history = max(8, self.staleness_config.s_max * 2)
+        self._delta_history: dict[int, dict[str, torch.Tensor]] = {}
+
     def process_one(self) -> bool:
         """Poll and handle up to one fetch request and one push update.
 
@@ -93,15 +98,53 @@ class ParameterServer:
                 resp = FetchResponse(
                     version=self.version,
                     params=None,
+                    is_delta=False,
                     compression_setting=self.current_strength,
                     s_max=self.staleness_config.s_max,
                 )
+            elif (
+                self.enable_delta_broadcast
+                and fetch_req.known_version >= 0
+                and fetch_req.known_version in self._delta_history
+            ):
+                # Worker can be caught up using accumulated deltas!
+                accumulated_delta: dict[str, torch.Tensor] | None = {}
+                for v in range(fetch_req.known_version, self.version):
+                    v_delta = self._delta_history.get(v)
+                    if v_delta is None:
+                        accumulated_delta = None
+                        break
+                    for name, d_tensor in v_delta.items():
+                        if name not in accumulated_delta:
+                            accumulated_delta[name] = d_tensor.clone()
+                        else:
+                            accumulated_delta[name].add_(d_tensor)
+
+                if accumulated_delta is not None:
+                    resp = FetchResponse(
+                        version=self.version,
+                        delta=accumulated_delta,
+                        is_delta=True,
+                        compression_setting=self.current_strength,
+                        s_max=self.staleness_config.s_max,
+                    )
+                else:
+                    # Fallback to full snapshot
+                    snapshot = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+                    resp = FetchResponse(
+                        version=self.version,
+                        params=snapshot,
+                        is_delta=False,
+                        compression_setting=self.current_strength,
+                        s_max=self.staleness_config.s_max,
+                    )
             else:
-                # Snapshot parameters
+                # Full snapshot fallback (initial fetch or severe straggler)
                 snapshot = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
                 resp = FetchResponse(
                     version=self.version,
                     params=snapshot,
+                    is_delta=False,
                     compression_setting=self.current_strength,
                     s_max=self.staleness_config.s_max,
                 )
@@ -120,8 +163,23 @@ class ParameterServer:
                 decoded_flat = self.compressor.decode(push_up.payload, target_device=bucket.device)
                 unflattened = bucket.unflatten_to_dict(decoded_flat)
 
+                old_params = None
+                if self.enable_delta_broadcast:
+                    old_params = {name: p.detach().clone() for name, p in self.trainable_params}
+
                 # Apply to server model with staleness downweighting
                 self.server_optimizer.step_with_gradients(unflattened, weight=decision.weight)
+
+                if self.enable_delta_broadcast and old_params is not None:
+                    step_delta = {
+                        name: (p.detach() - old_params[name]).cpu()
+                        for name, p in self.trainable_params
+                    }
+                    self._delta_history[self.version] = step_delta
+                    # Prune history beyond max_delta_history
+                    min_keep = self.version - self.max_delta_history
+                    self._delta_history = {v: d for v, d in self._delta_history.items() if v >= min_keep}
+
                 self.version += 1
 
             # Telemetry logging
