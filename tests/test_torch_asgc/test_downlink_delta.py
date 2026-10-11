@@ -79,5 +79,10 @@ def test_delta_broadcasting_reconstruction_is_exact():
         assert resp_delta.delta is not None
         assert resp_delta.version == 3
 
+        # Verify INT8 QuantizedDelta achieves significant wire byte reduction vs full float32 snapshot
+        snapshot_bytes = resp1.encoded_bytes()
+        delta_bytes = resp_delta.encoded_bytes()
+        assert delta_bytes < snapshot_bytes
+
     finally:
         server.close()

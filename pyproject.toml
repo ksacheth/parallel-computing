@@ -7,7 +7,7 @@ name = "torch-asgc"
 version = "0.1.0"
 description = "Adaptive Staleness-Aware Gradient Compression for Distributed PyTorch Training"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "ASGC Contributors" }
 ]
@@ -30,3 +30,7 @@ dev = [
 where = ["src"]
 include = ["torch_asgc*"]
 exclude = ["asgc*"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+

@@ -89,3 +89,72 @@ def test_public_api_e2e_training_convergence():
         assert server.version == 15
     finally:
         server.close()
+
+
+def test_default_worker_id_and_lr_scheduler_compatibility():
+    model_s = nn.Linear(4, 1)
+    model_w = nn.Linear(4, 1)
+    model_w.load_state_dict(model_s.state_dict())
+
+    hub = LocalTransportHub()
+    server = ParameterServer(
+        model=model_s,
+        optimizer=torch.optim.SGD(model_s.parameters(), lr=0.1),
+        bind_address=hub,
+    )
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        # worker_id=None should auto-generate matching ID across client & transport
+        client = connect(hub)
+        dist_model = DistributedModel(model_w, client=client)
+        base_opt = torch.optim.SGD(dist_model.parameters(), lr=0.1)
+        dist_opt = DistributedOptimizer(
+            base_optimizer=base_opt,
+            model=dist_model,
+            client=client,
+            max_grad_norm=1.0,
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(dist_opt, step_size=1, gamma=0.5)
+
+        x = torch.randn(4, 4)
+        loss = dist_model(x).sum()
+        loss.backward()
+        dist_opt.step()
+        scheduler.step()
+
+        assert dist_opt.param_groups[0]["lr"] == 0.05
+        assert server.version == 1
+        assert isinstance(dist_opt.state_dict(), dict)
+    finally:
+        server.close()
+
+
+def test_adamw_staleness_downweighting_scales_update_step():
+    from torch_asgc.engine.optimizer import StatefulServerOptimizer
+
+    torch.manual_seed(7)
+    m_full = nn.Linear(4, 2, bias=False)
+    m_down = nn.Linear(4, 2, bias=False)
+    m_down.load_state_dict(m_full.state_dict())
+    init_w = m_full.weight.detach().clone()
+
+    eng_full = StatefulServerOptimizer(
+        torch.optim.AdamW(m_full.parameters(), lr=0.01, weight_decay=0.0),
+        list(m_full.named_parameters()),
+    )
+    eng_down = StatefulServerOptimizer(
+        torch.optim.AdamW(m_down.parameters(), lr=0.01, weight_decay=0.0),
+        list(m_down.named_parameters()),
+    )
+
+    grad = {"weight": torch.randn_like(init_w)}
+    eng_full.step_with_gradients(grad, weight=1.0)
+    eng_down.step_with_gradients(grad, weight=0.25)
+
+    delta_full = m_full.weight.detach() - init_w
+    delta_down = m_down.weight.detach() - init_w
+    assert torch.allclose(delta_down, 0.25 * delta_full, atol=1e-6)
+
+

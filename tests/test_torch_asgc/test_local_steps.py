@@ -70,12 +70,17 @@ def test_micro_local_steps_sync_frequency():
         dist_opt.step()
         assert server.version == 0
 
-        # Step 3 (sync boundary): pushes update to server, version becomes 1
+        # Step 3 (sync boundary): pushes accumulated 3-step gradient to server, version becomes 1
         dist_opt.zero_grad()
         loss3 = criterion(model(x), y)
         loss3.backward()
         dist_opt.step()
         assert server.version == 1
+
+        # Verify worker weights and server weights are synchronized (no local drift!)
+        for name, p in server_model.named_parameters():
+            worker_p = dict(worker_model.named_parameters())[name]
+            assert torch.allclose(worker_p, p, atol=1e-5), f"Weight drift in {name}"
 
         # Step 4 (local): server version remains 1
         dist_opt.zero_grad()

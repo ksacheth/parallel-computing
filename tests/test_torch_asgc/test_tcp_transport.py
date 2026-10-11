@@ -1,7 +1,7 @@
 import socket
 import time
 import torch
-from torch_asgc.transport.base import FetchRequest, PushUpdate
+from torch_asgc.transport.base import BucketPayload, FetchRequest, PushUpdate
 from torch_asgc.transport.tcp import TCPTransportClient, TCPTransportServer
 
 
@@ -25,12 +25,16 @@ def test_tcp_transport_push_and_fetch():
         # Test push
         update = PushUpdate(
             worker_id="worker_tcp_1",
-            bucket_index=0,
             version=1,
-            payload=[1, 2, 3],
-            payload_bytes=12,
+            buckets=[
+                BucketPayload(
+                    bucket_index=0,
+                    payload=[1, 2, 3],
+                    payload_bytes=12,
+                    residual_norm=0.1,
+                )
+            ],
             loss_val=0.42,
-            residual_norm=0.1,
         )
 
         # Worker pushes in background thread

@@ -15,6 +15,7 @@ import torch.nn as nn
 from torch.optim import Optimizer
 
 from torch_asgc.client import ASGCClient
+from torch_asgc.compression import CompressionConfig
 from torch_asgc.model import DistributedModel
 from torch_asgc.optim import DistributedOptimizer
 
@@ -56,6 +57,7 @@ class ASGCStrategy(SingleDeviceStrategy):
         bucket_cap_mb: float = 25.0,
         local_steps: int = 1,
         device: torch.device | str = "cpu",
+        compression: CompressionConfig | None = None,
         **kwargs: Any,
     ) -> None:
         if not _LIGHTNING_AVAILABLE and not kwargs.get("_test_mode", False):
@@ -67,13 +69,28 @@ class ASGCStrategy(SingleDeviceStrategy):
         root_device = torch.device(device) if isinstance(device, str) else device
         super().__init__(device=root_device)
         self.client = client
-        self.compression_mode = compression_mode
-        self.rho = rho
-        self.bits = bits
+        self.compression_config = (
+            compression
+            if compression is not None
+            else CompressionConfig(mode=compression_mode, rho=rho, bits=bits)
+        )
         self.error_feedback = error_feedback
         self.bucket_cap_mb = bucket_cap_mb
         self.local_steps = local_steps
         self._wrapped_model: DistributedModel | None = None
+        self._trainer: Any | None = None
+
+    @property
+    def compression_mode(self) -> str:
+        return self.compression_config.mode
+
+    @property
+    def rho(self) -> float:
+        return self.compression_config.rho
+
+    @property
+    def bits(self) -> int:
+        return self.compression_config.bits
 
     def setup_model(self, model: nn.Module) -> nn.Module:
         """Wrap the LightningModule with DistributedModel."""
@@ -82,6 +99,7 @@ class ASGCStrategy(SingleDeviceStrategy):
 
     def setup_optimizers(self, trainer: Any) -> list[Optimizer]:
         """Wrap Lightning's configured optimizers with DistributedOptimizer."""
+        self._trainer = trainer
         optimizers = getattr(trainer, "optimizers", [])
         wrapped_optimizers: list[Optimizer] = []
 
@@ -93,9 +111,7 @@ class ASGCStrategy(SingleDeviceStrategy):
                     base_optimizer=opt,
                     model=self._wrapped_model if self._wrapped_model is not None else trainer.lightning_module,
                     client=self.client,
-                    compression_mode=self.compression_mode,
-                    rho=self.rho,
-                    bits=self.bits,
+                    compression=self.compression_config,
                     error_feedback=self.error_feedback,
                     bucket_cap_mb=self.bucket_cap_mb,
                     local_steps=self.local_steps,
@@ -106,6 +122,19 @@ class ASGCStrategy(SingleDeviceStrategy):
             trainer.optimizers = wrapped_optimizers
         return wrapped_optimizers
 
+    def _extract_loss_val(self, kwargs: dict[str, Any]) -> float | None:
+        if "loss_val" in kwargs and kwargs["loss_val"] is not None:
+            return float(kwargs["loss_val"])
+        trainer = self._trainer
+        if trainer is not None:
+            metrics = getattr(trainer, "callback_metrics", None)
+            if isinstance(metrics, dict):
+                for key in ("train_loss", "train_loss_step", "loss"):
+                    if key in metrics and metrics[key] is not None:
+                        val = metrics[key]
+                        return float(val.detach().item() if isinstance(val, torch.Tensor) else val)
+        return None
+
     def optimizer_step(
         self,
         optimizer: Optimizer,
@@ -113,5 +142,9 @@ class ASGCStrategy(SingleDeviceStrategy):
         model: nn.Module | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Execute optimizer step with ASGC compression and telemetry."""
-        return optimizer.step(closure=closure, **kwargs)
+        """Execute optimizer step with ASGC compression and live loss telemetry."""
+        loss_val = self._extract_loss_val(kwargs)
+        clean_kwargs = {k: v for k, v in kwargs.items() if k != "loss_val"}
+        if isinstance(optimizer, DistributedOptimizer):
+            return optimizer.step(closure=closure, loss_val=loss_val, **clean_kwargs)
+        return optimizer.step(closure=closure, **clean_kwargs)

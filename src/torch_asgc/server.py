@@ -2,18 +2,23 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 
-from torch_asgc.compression import make_compressor
+from torch_asgc.compression import CompressionConfig, make_compressor
 from torch_asgc.controller import AdaptiveConfig, AdaptiveController, TelemetryWindow
 from torch_asgc.engine.bucketing import create_buckets
 from torch_asgc.engine.optimizer import StatefulServerOptimizer
 from torch_asgc.staleness import StalenessConfig, decide_staleness
-from torch_asgc.transport.base import FetchResponse, PushAck, TransportServer
+from torch_asgc.transport.base import (
+    FetchResponse,
+    PushAck,
+    QuantizedDelta,
+    TransportServer,
+    parse_tcp_address,
+)
 from torch_asgc.transport.local import LocalTransportHub, LocalTransportServer
 from torch_asgc.transport.tcp import TCPTransportServer
 
@@ -32,6 +37,7 @@ class ParameterServer:
         initial_strength: float = 0.1,
         adaptive_config: AdaptiveConfig | None = None,
         bucket_cap_mb: float = 25.0,
+        compression: CompressionConfig | None = None,
     ) -> None:
         self.model = model
         self.version = 0
@@ -39,30 +45,35 @@ class ParameterServer:
 
         # Initialize transport
         if isinstance(transport, LocalTransportHub):
-            self.transport = LocalTransportServer(transport)
+            self.transport: TransportServer = LocalTransportServer(transport)
         elif transport is not None:
             self.transport = transport
         elif isinstance(bind_address, LocalTransportHub):
             self.transport = LocalTransportServer(bind_address)
-        elif isinstance(bind_address, tuple):
-            host, port = bind_address
+        elif bind_address is not None:
+            host, port = parse_tcp_address(bind_address)
             self.transport = TCPTransportServer((host, port))
-        elif isinstance(bind_address, str):
-            cleaned = bind_address.replace("tcp://", "")
-            host, port_str = cleaned.split(":")
-            self.transport = TCPTransportServer((host, int(port_str)))
         else:
             raise ValueError("must provide transport or valid bind_address")
 
         # Configuration
         self.staleness_config = staleness_config or StalenessConfig()
-        self.compression_mode = compression_mode
-        self.current_strength = initial_strength
-        self.compressor = make_compressor(
-            compression_mode,
-            rho=initial_strength,
-            bits=int(initial_strength),
-        )
+        if compression is not None:
+            self.compression_config = compression
+        else:
+            norm_mode = "quantize" if compression_mode.lower() == "qsgd" else compression_mode.lower()
+            rho_val = float(initial_strength) if norm_mode == "topk" else 0.1
+            bits_val = (
+                int(round(initial_strength))
+                if norm_mode == "quantize" and initial_strength >= 2.0
+                else 8
+            )
+            self.compression_config = CompressionConfig(
+                mode=norm_mode,
+                rho=rho_val,
+                bits=bits_val,
+            )
+        self.compressor = make_compressor(self.compression_config)
 
         # Optimization & Bucketing
         self.trainable_params = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
@@ -72,17 +83,43 @@ class ParameterServer:
         # Controller
         self.adaptive_config = adaptive_config
         self.controller = (
-            AdaptiveController(adaptive_config, compression_mode=compression_mode)
+            AdaptiveController(adaptive_config, compression_mode=self.compression_config.mode)
             if adaptive_config and adaptive_config.enabled
             else None
         )
         self.telemetry = TelemetryWindow()
         self._last_control_time = time.perf_counter()
 
-        # Downlink Delta History Buffer
+        # Downlink Delta History Buffer & Server-Side Error Feedback Residuals
         self.enable_delta_broadcast = True
         self.max_delta_history = max(8, self.staleness_config.s_max * 2)
         self._delta_history: dict[int, dict[str, torch.Tensor]] = {}
+        self._delta_residuals: dict[str, torch.Tensor] = {
+            name: torch.zeros_like(p, dtype=torch.float32) for name, p in self.trainable_params
+        }
+
+    @property
+    def compression_mode(self) -> str:
+        return self.compression_config.mode
+
+    @property
+    def current_strength(self) -> float:
+        return self.compression_config.strength
+
+    @current_strength.setter
+    def current_strength(self, value: float) -> None:
+        self.compression_config = self.compression_config.with_strength(value)
+        self.compressor = make_compressor(self.compression_config)
+
+    def _make_snapshot_response(self) -> FetchResponse:
+        snapshot = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+        return FetchResponse(
+            version=self.version,
+            params=snapshot,
+            is_delta=False,
+            compression_setting=self.current_strength,
+            s_max=self.staleness_config.s_max,
+        )
 
     def process_one(self) -> bool:
         """Poll and handle up to one fetch request and one push update.
@@ -109,7 +146,7 @@ class ParameterServer:
                 and fetch_req.known_version >= 0
                 and fetch_req.known_version in self._delta_history
             ):
-                # Worker can be caught up using accumulated deltas!
+                # Worker can be caught up using accumulated quantized deltas
                 accumulated_delta: dict[str, torch.Tensor] | None = {}
                 for v in range(fetch_req.known_version, self.version):
                     v_delta = self._delta_history.get(v)
@@ -123,33 +160,25 @@ class ParameterServer:
                             accumulated_delta[name].add_(d_tensor)
 
                 if accumulated_delta is not None:
+                    quantized_deltas: dict[str, QuantizedDelta | torch.Tensor] = {
+                        name: QuantizedDelta.from_tensor(acc_t)[0]
+                        for name, acc_t in accumulated_delta.items()
+                    }
+                    buffers = {
+                        k: v.detach().cpu().clone() for k, v in self.model.named_buffers()
+                    }
                     resp = FetchResponse(
                         version=self.version,
-                        delta=accumulated_delta,
+                        delta=quantized_deltas,
+                        buffers=buffers if buffers else None,
                         is_delta=True,
                         compression_setting=self.current_strength,
                         s_max=self.staleness_config.s_max,
                     )
                 else:
-                    # Fallback to full snapshot
-                    snapshot = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
-                    resp = FetchResponse(
-                        version=self.version,
-                        params=snapshot,
-                        is_delta=False,
-                        compression_setting=self.current_strength,
-                        s_max=self.staleness_config.s_max,
-                    )
+                    resp = self._make_snapshot_response()
             else:
-                # Full snapshot fallback (initial fetch or severe straggler)
-                snapshot = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
-                resp = FetchResponse(
-                    version=self.version,
-                    params=snapshot,
-                    is_delta=False,
-                    compression_setting=self.current_strength,
-                    s_max=self.staleness_config.s_max,
-                )
+                resp = self._make_snapshot_response()
             self.transport.send_fetch_response(fetch_req.worker_id, resp)
 
         # 2. Handle Push updates
@@ -176,12 +205,17 @@ class ParameterServer:
                 self.server_optimizer.step_with_gradients(unflattened_step_grads, weight=decision.weight)
 
                 if self.enable_delta_broadcast and old_params is not None:
-                    step_delta = {
-                        name: (p.detach() - old_params[name]).cpu()
-                        for name, p in self.trainable_params
-                    }
+                    step_delta: dict[str, torch.Tensor] = {}
+                    with torch.no_grad():
+                        for name, p in self.trainable_params:
+                            raw_delta = (p.detach() - old_params[name]).to(torch.float32) + self._delta_residuals[name]
+                            _, reconstructed = QuantizedDelta.from_tensor(raw_delta)
+                            self._delta_residuals[name] = (raw_delta - reconstructed).detach()
+                            # Snap authoritative parameter to reconstructed INT8 step so worker & server never drift
+                            p.copy_(old_params[name] + reconstructed.to(device=p.device, dtype=p.dtype))
+                            step_delta[name] = reconstructed.cpu().to(dtype=p.dtype)
+
                     self._delta_history[self.version] = step_delta
-                    # Prune history beyond max_delta_history
                     min_keep = self.version - self.max_delta_history
                     self._delta_history = {v: d for v, d in self._delta_history.items() if v >= min_keep}
 
@@ -198,7 +232,9 @@ class ParameterServer:
                 self.telemetry.add_loss(push_up.loss_val)
 
             # Check adaptive controller
-            if self.controller and (time.perf_counter() - self._last_control_time) >= self.adaptive_config.interval_s:
+            now = time.perf_counter()
+            if self.controller and (now - self._last_control_time) >= self.adaptive_config.interval_s:
+                self.telemetry.duration_s = max(now - self._last_control_time, 1e-6)
                 ctrl_decision = self.controller.decide(
                     self.telemetry,
                     current_strength=self.current_strength,
@@ -206,13 +242,8 @@ class ParameterServer:
                 )
                 self.current_strength = ctrl_decision.new_compression_strength
                 self.staleness_config.s_max = ctrl_decision.new_s_max
-                self.compressor = make_compressor(
-                    self.compression_mode,
-                    rho=self.current_strength,
-                    bits=int(self.current_strength),
-                )
                 self.telemetry = TelemetryWindow()
-                self._last_control_time = time.perf_counter()
+                self._last_control_time = now
 
             # Acknowledge push
             ack = PushAck(

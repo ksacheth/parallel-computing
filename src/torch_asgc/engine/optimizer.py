@@ -1,7 +1,10 @@
 """Server-side stateful optimizer engine for staleness-weighted updates.
 
-Wraps standard PyTorch optimizers (SGD, AdamW, Adam) or applies staleness-weighted
-gradients with Delay-Compensated Momentum and decoupled weight decay.
+Wraps standard PyTorch optimizers (SGD, AdamW, Adam) and applies staleness
+attenuation w(tau) by scaling the effective step size (learning rate) during
+optimizer.step(). Passing unscaled gradients into param.grad preserves true
+first- and second-moment statistics in adaptive optimizers (preventing AdamW's
+m_t / sqrt(v_t) normalization from cancelling out w(tau)).
 """
 from __future__ import annotations
 
@@ -13,11 +16,7 @@ from torch.optim import Optimizer
 
 
 class StatefulServerOptimizer:
-    """Applies staleness-weighted updates to server model parameters.
-
-    Integrates with standard PyTorch Optimizers while properly scaling gradients
-    by staleness weight w(tau) before momentum and second-moment updates.
-    """
+    """Applies staleness-weighted updates to server model parameters."""
 
     def __init__(
         self,
@@ -51,13 +50,11 @@ class StatefulServerOptimizer:
             if g is None:
                 continue
 
-            # Scale gradient by staleness attenuation weight w(tau)
-            scaled_g = (g * weight).to(device=param.device, dtype=param.dtype)
-
+            grad_tensor = g.to(device=param.device, dtype=param.dtype)
             if param.grad is None:
-                param.grad = scaled_g
+                param.grad = grad_tensor.clone()
             else:
-                param.grad.copy_(scaled_g)
+                param.grad.copy_(grad_tensor)
 
         if self.clip_grad_norm is not None and self.clip_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(
@@ -65,5 +62,13 @@ class StatefulServerOptimizer:
                 max_norm=self.clip_grad_norm,
             )
 
-        self.optimizer.step()
+        orig_lrs = [float(group["lr"]) for group in self.optimizer.param_groups]
+        try:
+            for group, base_lr in zip(self.optimizer.param_groups, orig_lrs):
+                group["lr"] = base_lr * float(weight)
+            self.optimizer.step()
+        finally:
+            for group, base_lr in zip(self.optimizer.param_groups, orig_lrs):
+                group["lr"] = base_lr
+
         self.optimizer.zero_grad(set_to_none=True)

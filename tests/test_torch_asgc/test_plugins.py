@@ -82,6 +82,7 @@ def test_lightning_strategy_setup_and_optimizer_step(running_server_and_client):
     mock_trainer = SimpleNamespace(
         lightning_module=wrapped_model,
         optimizers=[base_opt],
+        callback_metrics={"train_loss": torch.tensor(0.777)},
     )
     optimizers = strategy.setup_optimizers(mock_trainer)
     assert len(optimizers) == 1
@@ -101,6 +102,8 @@ def test_lightning_strategy_setup_and_optimizer_step(running_server_and_client):
     # Allow server to process push
     time.sleep(0.1)
     assert server.version > initial_version
+    assert len(server.telemetry.losses) >= 1
+    assert server.telemetry.losses[-1] == pytest.approx(0.777, abs=1e-5)
 
 
 def test_hf_trainer_import_error(running_server_and_client):

@@ -117,7 +117,9 @@ def create_buckets(
     so that earlier gradients computed during backprop can be dispatched sooner.
     """
     max_bytes = int(bucket_cap_mb * 1024 * 1024)
-    trainable_params = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
+    trainable_params = list(
+        reversed([(name, p) for name, p in model.named_parameters() if p.requires_grad])
+    )
 
     buckets: list[GradientBucket] = []
     current_params: list[tuple[str, nn.Parameter]] = []
