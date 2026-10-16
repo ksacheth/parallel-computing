@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torch-asgc"
+version = "0.1.0"
+description = "Adaptive Staleness-Aware Gradient Compression for Distributed PyTorch Training"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "ASGC Contributors" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "torchvision>=0.17",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["torch_asgc*"]
+exclude = ["asgc*"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+

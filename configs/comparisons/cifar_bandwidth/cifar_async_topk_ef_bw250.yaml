@@ -1,0 +1,27 @@
+run:
+  name: cifar_async_topk_ef_bw250
+  seed: 0
+  results_dir: results
+  data_root: data
+workload:
+  dataset: cifar10
+  model: resnet18
+  batch_size: 128
+  num_workers: 3
+  lr: 0.02
+  lr_decay_frac: 0.5
+  max_updates: 6000
+  max_wall_time_s: 21600
+  eval_interval: 500
+  target_accuracy: 0.8
+heterogeneity:
+  compute_delay:
+    1: 0.5
+    2: 1.5
+  comm_delay_ms: 0
+  bandwidth_mbps: 250
+compression:
+  mode: topk
+  rho: 0.25
+error_feedback:
+  enabled: true

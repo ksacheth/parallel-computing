@@ -1,0 +1,15 @@
+# The full CIFAR-10 evaluation matrix: six baselines + the adaptive method +
+# three ablations, run per seed. 30 runs at the committed budgets; launch with:
+#   python scripts/run_matrix.py --matrix configs/matrix_cifar_full.yaml
+# Reduce max_updates/max_wall_time_s in the source configs for quicker sweeps.
+configs:
+  - configs/baselines/cifar_sync_sgd.yaml
+  - configs/baselines/cifar_async_plain.yaml
+  - configs/baselines/cifar_async_fixed_staleness.yaml
+  - configs/baselines/cifar_async_fixed_topk.yaml
+  - configs/baselines/cifar_async_fixed_quant.yaml
+  - configs/adaptive/cifar_adaptive_topk.yaml
+  - configs/adaptive/ablations/cifar_adaptive_no_ef.yaml
+  - configs/adaptive/ablations/cifar_adaptive_fixed_compression.yaml
+  - configs/adaptive/ablations/cifar_adaptive_fixed_staleness.yaml
+seeds: [0, 1, 2]

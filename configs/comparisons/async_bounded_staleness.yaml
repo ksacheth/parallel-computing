@@ -1,0 +1,25 @@
+run:
+  name: ab_async_bounded
+  seed: 0
+  results_dir: results
+  data_root: data
+workload:
+  dataset: fashion_mnist
+  model: small_cnn
+  batch_size: 128
+  num_workers: 3
+  lr: 0.05
+  lr_decay_frac: 0.0
+  max_updates: 20000
+  max_wall_time_s: 420
+  eval_interval: 500
+heterogeneity:
+  compute_delay: {1: 0.5}
+  comm_delay_ms: 0
+compression:
+  mode: identity
+staleness:
+  enabled: true
+  s_low: 1
+  s_max: 4
+  beta: 0.5
