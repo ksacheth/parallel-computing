@@ -32,7 +32,7 @@ Consult [`CONTEXT.md`](CONTEXT.md) for the authoritative domain model, canonical
 
 ### Environment & Commands
 
-- Python 3.10+ with PyTorch (CPU sufficient; CUDA auto-detected when available).
+- Python 3.11+ with PyTorch (CPU sufficient; CUDA auto-detected when available).
 - Install dependencies: `pip install -r requirements.txt`.
 - Install public library in editable mode: `pip install -e .`.
 - **Fast Unit Tests (Library):** `pytest tests/test_torch_asgc -q` (~12s, 29 tests covering TCP transport, AMP, bucketing, compression, plugins).
@@ -48,13 +48,13 @@ Consult [`CONTEXT.md`](CONTEXT.md) for the authoritative domain model, canonical
   - `model.py`: `DistributedModel` wrapper synchronizing parameter snapshots with the server.
   - `optim.py`: `DistributedOptimizer` intercepting gradients, executing error feedback, compression, and residual rollback.
   - `server.py`: Authoritative `ParameterServer` managing TCP client connections, staleness filtering, version increments, and optimizer steps.
-  - `client.py`: `connect()` factory and `WorkerClient` network lifecycle manager.
-  - `transport/`: `TCPClientTransport` and `TCPServerTransport` with binary payload framing.
+  - `client.py`: `connect()` factory and `ASGCClient` network lifecycle manager.
+  - `transport/`: `TCPTransportClient` and `TCPTransportServer` with binary payload framing.
   - `compression.py`: Top-K sparsification, QSGD quantization, and Identity compressors with wire-byte calculation.
   - `staleness.py`: Staleness evaluation, soft attenuation ($w = 1/(1+\beta\tau)$), and hard bound cutoff ($S_{max}$).
   - `controller.py`: Telemetry-driven adaptation of compression active fraction $\rho$ and staleness cutoff $S_{max}$.
   - `engine/`: AMP mixed-precision integration, gradient bucketing, downlink delta broadcasting, and micro-local steps.
-  - `plugins/`: PyTorch Lightning strategy (`ASGCStrategy`) and Hugging Face Trainer callback (`ASGCHFTrainerCallback`).
+  - `plugins/`: PyTorch Lightning strategy (`ASGCStrategy`) and Hugging Face Trainer callback (`ASGCTrainerCallback`).
 - `src/asgc/` — Research simulation harness:
   - `server.py`, `worker.py`, `transport.py`: Queue-based multiprocess parameter-server simulation.
   - `compression.py`, `staleness.py`, `controller.py`: Algorithmic modules.
