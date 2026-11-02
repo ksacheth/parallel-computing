@@ -1,0 +1,132 @@
+{
+  "notebook": "transformer_asgc_cuda.ipynb",
+  "started_at": "2026-11-02T09:51:16.676734+00:00",
+  "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+  "python": "3.13.16",
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "cudnn": 92700,
+  "cpu_count": 2,
+  "repo": "/content/parallel-computing",
+  "repo_commit": "fcdfecdb6e205399211bf18e665eceb6f4489013",
+  "corpus_source": "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt",
+  "corpus_chars": 1115394,
+  "model_params": 1809984,
+  "config": {
+    "seed": 0,
+    "profile_name": "report",
+    "num_workers": 4,
+    "target_updates": 200,
+    "time_cap_s": 420.0,
+    "eval_every": 40,
+    "eval_interval_s": 12.0,
+    "eval_batches": 10,
+    "batch_size": 8,
+    "block_size": 128,
+    "n_layer": 4,
+    "n_head": 4,
+    "n_embd": 192,
+    "dropout": 0.1,
+    "lr": 0.0005,
+    "weight_decay": 0.1,
+    "bandwidth_mbps": 32.0,
+    "downlink_mbps": 128.0,
+    "latency_s": 0.002,
+    "bucket_cap_mb": 25.0,
+    "local_steps": 1,
+    "max_grad_norm": 1.0,
+    "s_low": 2,
+    "s_max": 10,
+    "beta": 0.5,
+    "adaptive_interval_s": 2.0,
+    "rho_min": 0.1,
+    "rho_max": 0.2,
+    "max_delta_rho": 0.05,
+    "smax_min": 6,
+    "smax_max": 12,
+    "max_delta_smax": 1,
+    "comm_pressure_min": 200000.0,
+    "worsen_tol": 0.05,
+    "variability_tol": 0.05,
+    "reject_frac_max": 0.25,
+    "use_gpu_worker": true,
+    "eval_on_gpu": true,
+    "cuda_strict": true
+  },
+  "seeds": [
+    0
+  ],
+  "arms": [
+    {
+      "name": "async_identity",
+      "mode": "identity",
+      "rho": 1.0,
+      "error_feedback": false,
+      "adaptive": false,
+      "sync": false,
+      "color": "#4C78A8"
+    },
+    {
+      "name": "async_topk20",
+      "mode": "topk",
+      "rho": 0.2,
+      "error_feedback": true,
+      "adaptive": false,
+      "sync": false,
+      "color": "#F58518"
+    },
+    {
+      "name": "async_adaptive",
+      "mode": "topk",
+      "rho": 0.2,
+      "error_feedback": true,
+      "adaptive": true,
+      "sync": false,
+      "color": "#54A24B"
+    },
+    {
+      "name": "sync_identity",
+      "mode": "identity",
+      "rho": 1.0,
+      "error_feedback": false,
+      "adaptive": false,
+      "sync": true,
+      "color": "#B279A2"
+    }
+  ],
+  "gpu": {
+    "available": true,
+    "device": "cuda:0",
+    "device_type": "cuda",
+    "name": "Tesla T4",
+    "capability": "7.5",
+    "total_memory_gb": 15.637086208,
+    "probe": [
+      2.0,
+      2.0,
+      2.0,
+      2.0
+    ],
+    "torch": "2.11.0+cu130",
+    "torch_cuda": "13.0",
+    "device_count": 1
+  },
+  "gpu_preflight": {
+    "ok": true,
+    "loss": 4.2111430168151855,
+    "elapsed_s": 0.4906887479999966,
+    "device": "cuda:0",
+    "name": "Tesla T4"
+  },
+  "gpu_stack_preflight": {
+    "ok": true,
+    "loss": 4.221540451049805,
+    "server_version": 1,
+    "elapsed_s": 0.32668175200001315
+  },
+  "gpu_worker_used": true,
+  "profile": "report",
+  "output_dir": "/content/asgc_transformer_results",
+  "elapsed_s": 492.321715233,
+  "finished_at": "2026-11-02T09:59:29.343320+00:00"
+}

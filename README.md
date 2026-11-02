@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 29 passing](https://img.shields.io/badge/tests-29%20passing-brightgreen.svg)]()
+[![Tests: 29](https://img.shields.io/badge/tests-29%20library-blue.svg)]()
 [![Course](https://img.shields.io/badge/Course-Parallel%20Computing-purple.svg)]()
 
 **torch-asgc** is an asynchronous distributed deep learning training system that targets two core bottlenecks in data-parallel training:
@@ -15,7 +15,7 @@ It addresses both by jointly orchestrating **gradient compression with error fee
 
 This repository contains two complementary codebases:
 
-- **`src/torch_asgc/` — the public library.** A decoupled PyTorch distributed training library (`DistributedModel`, `DistributedOptimizer`, `ParameterServer`) with real TCP transport, AMP, gradient bucketing, downlink delta broadcasting, micro-local steps, and plugins for PyTorch Lightning and Hugging Face. 29 unit tests pass in roughly 12 seconds on CPU.
+- **`src/torch_asgc/` — the public library.** A decoupled PyTorch distributed training library (`DistributedModel`, `DistributedOptimizer`, `ParameterServer`) with real TCP transport, AMP, gradient bucketing, downlink delta broadcasting, local gradient accumulation, and plugins for PyTorch Lightning and Hugging Face. 29 unit tests cover these paths; the Hugging Face integration test also needs `accelerate`.
 - **`src/asgc/` — the research simulation harness.** A deterministic multiprocess parameter-server simulation that injects worker delays and bandwidth limits, used to produce all empirical findings. See [`findings_for_report.md`](findings_for_report.md).
 
 > **Hardware note.** Everything in this repository runs on CPU. The public-library tests and the **Fashion-MNIST** simulation (a 55k-parameter CNN) are comfortable on a laptop with no GPU. The **CIFAR-10 ResNet-18** experiments are compute-heavy and were run on a GPU; on a CPU-only machine, prefer the Fashion-MNIST configs below.
@@ -79,14 +79,14 @@ sequenceDiagram
 - **Mixed precision (AMP).** `DistributedOptimizer.step(scaler=...)` unscales gradients, guards against Inf/NaN overflow, and safely skips the step on overflow.
 - **Gradient bucketing.** Groups parameters into contiguous 1-D buffers for coalesced compression and transmission.
 - **Downlink delta broadcasting.** The server sends INT8-quantized parameter deltas accumulated since a worker's last fetch instead of full snapshots.
-- **Micro-local steps.** Workers can take several local optimizer steps between server synchronizations (`local_steps > 1`).
+- **Local gradient accumulation.** With `local_steps > 1`, the optimizer averages gradients across that many micro-batches before sending one compressed update. It does not call the base optimizer locally.
 - **Framework plugins.** PyTorch Lightning (`ASGCStrategy`) and Hugging Face Trainer (`ASGCTrainerCallback`, `ASGCTrainer`, `wrap_hf_trainer`).
 
 ---
 
 ## 📊 Empirical Benchmark Results
 
-All experiments use the research simulation (`src/asgc/`) under identical controlled worker heterogeneity and the same delay schedule per dataset; methods differ only by config. Every update, evaluation, and controller decision is logged to `results/<run>/events.jsonl`, the single source of truth for these numbers. Single-seed runs are indicative; the committed CIFAR matrix provides multi-seed confirmation. Full data and the F1–F12 findings live in [`findings_for_report.md`](findings_for_report.md).
+All experiments use the research simulation (`src/asgc/`) under identical controlled worker heterogeneity and the same delay schedule per dataset; methods differ only by config. Every update, evaluation, and controller decision is logged to `results/<run>/events.jsonl`, the single source of truth for these numbers. The transformer slice (§5b of the findings) runs through the public `torch_asgc`/T4 path instead; its evidence is committed under [`artifacts/transformer_asgc/`](artifacts/transformer_asgc/). Single-seed runs are indicative; `configs/matrix_cifar_full.yaml` defines the multi-seed protocol but has not been run. Full data, findings F1–F17, and the deviations from the written methodology live in [`findings_for_report.md`](findings_for_report.md).
 
 ### 1. Fashion-MNIST straggler benchmark — CPU-friendly (small CNN, 3 workers, 3,000 updates)
 
@@ -99,9 +99,9 @@ Straggler schedule: worker 1 delayed by +0.3 s.
 | Async + fixed staleness | 87.03% | 41.1 s | 0.706 GB | 1.0× | 6.7× |
 | Async + fixed Top-K (no EF) | 86.92% | 31.5 s | 0.332 GB | 2.0× | 8.7× |
 | **Top-K + error feedback (ASGC)** | **87.47%** | 32.4 s | **0.332 GB** | 2.0× | 8.5× |
-| Adaptive ASGC | 87.05% | 40.8 s | 0.470 GB | 1.52× | 6.7× |
+| Adaptive ASGC (post-fix controller) | 87.09% | 36.2 s | **0.195 GB** | **3.65×** | 7.6× |
 
-> **Takeaway (F1, F2):** Asynchrony is worth roughly 10× wall-clock over synchronous SGD under stragglers. Top-K + EF is the Pareto winner — the best accuracy of all six methods at exactly half the bytes.
+> **Takeaway (F1, F2, F11):** Asynchrony is worth 9.9× wall-clock over averaged synchronous SGD under stragglers. Top-K + EF is the best fixed policy — the best accuracy of all six methods at exactly half the bytes. The post-fix adaptive controller goes further on bytes (3.65×) at equivalent accuracy within single-seed noise.
 
 ### 2. CIFAR-10 / ResNet-18 — unconstrained network (GPU, 3 workers, 6,000 updates)
 
@@ -202,7 +202,7 @@ optimizer = DistributedOptimizer(
     compression_mode="topk",
     rho=0.1,                   # Top-K active fraction (k/d)
     error_feedback=True,       # conserve residual gradient mass; rollback on reject is automatic
-    local_steps=1,             # micro-local steps between server syncs
+    local_steps=1,             # micro-batches averaged per compressed update
 )
 
 dataloader = DataLoader(my_dataset, batch_size=128, shuffle=True)
@@ -246,7 +246,7 @@ The `src/asgc/` harness reproduces all findings and figures. Workers run as sepa
 ### Running tests
 
 ```bash
-# Fast public-library suite (29 tests, ~12 s, CPU)
+# Fast public-library suite (29 tests, ~30-45 s, CPU; HF test also needs accelerate)
 python -m pytest tests/test_torch_asgc -q
 
 # Full suite (library + research-simulation gates, including end-to-end runs)
@@ -326,8 +326,10 @@ parallel-computing/
 │   ├── run_experiment.py            # Single experiment (--config)
 │   ├── run_matrix.py                # Multi-config/seed driver (--matrix)
 │   └── plot_results.py              # Summary tables & figures (--runs)
+├── notebooks/                       # Transformer CUDA run + frozen FMNIST/CIFAR results
+├── artifacts/transformer_asgc/      # Committed transformer evidence bundles
 ├── CONTEXT.md                       # Canonical domain glossary and vocabulary
-├── findings_for_report.md           # Full experimental report, findings F1–F12
+├── findings_for_report.md           # Full experimental report, findings F1–F17
 ├── AGENTS.md                        # Agent/contributor guide
 ├── requirements.txt                 # Runtime + experiment dependencies
 └── pyproject.toml                   # Package build (pip install -e .)

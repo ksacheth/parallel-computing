@@ -1,0 +1,86 @@
+{
+  "profile": "report",
+  "config": {
+    "seed": 0,
+    "profile_name": "report",
+    "num_workers": 4,
+    "target_updates": 200,
+    "time_cap_s": 420.0,
+    "eval_every": 20,
+    "eval_interval_s": 3600.0,
+    "eval_batches": 10,
+    "batch_size": 8,
+    "block_size": 128,
+    "n_layer": 4,
+    "n_head": 4,
+    "n_embd": 192,
+    "dropout": 0.1,
+    "lr": 0.0005,
+    "weight_decay": 0.1,
+    "bandwidth_mbps": 32.0,
+    "downlink_mbps": 128.0,
+    "latency_s": 0.002,
+    "bucket_cap_mb": 25.0,
+    "local_steps": 1,
+    "max_grad_norm": 1.0,
+    "s_low": 2,
+    "s_max": 10,
+    "beta": 0.5,
+    "adaptive_interval_s": 2.0,
+    "rho_min": 0.1,
+    "rho_max": 0.2,
+    "max_delta_rho": 0.05,
+    "smax_min": 6,
+    "smax_max": 12,
+    "max_delta_smax": 1,
+    "comm_pressure_min": 200000.0,
+    "worsen_tol": 0.05,
+    "variability_tol": 0.05,
+    "reject_frac_max": 0.25,
+    "use_gpu_worker": true,
+    "eval_on_gpu": true,
+    "cuda_strict": true
+  },
+  "arms": [
+    {
+      "name": "async_identity",
+      "mode": "identity",
+      "rho": 1.0,
+      "error_feedback": false,
+      "adaptive": false,
+      "sync": false,
+      "color": "#4C78A8"
+    },
+    {
+      "name": "async_topk20",
+      "mode": "topk",
+      "rho": 0.2,
+      "error_feedback": true,
+      "adaptive": false,
+      "sync": false,
+      "color": "#F58518"
+    },
+    {
+      "name": "async_adaptive",
+      "mode": "topk",
+      "rho": 0.2,
+      "error_feedback": true,
+      "adaptive": true,
+      "sync": false,
+      "color": "#54A24B"
+    },
+    {
+      "name": "sync_identity",
+      "mode": "identity",
+      "rho": 1.0,
+      "error_feedback": false,
+      "adaptive": false,
+      "sync": true,
+      "color": "#B279A2"
+    }
+  ],
+  "seeds": [
+    0
+  ],
+  "output_dir": "/content/asgc_transformer_results"
+}
