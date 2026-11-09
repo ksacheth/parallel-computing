@@ -124,6 +124,7 @@ class FetchResponse:
     stop: bool = False
     compression_setting: float | None = None
     s_max: int | None = None
+    compression_mode: str | None = None  # server's codec, so workers encode compatibly
 
     def encoded_bytes(self) -> int:
         """Calculate wire bytes of the downlink payload."""
