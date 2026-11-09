@@ -15,6 +15,7 @@ import dataclasses
 import logging
 import os
 import pickle
+import queue
 import socket
 import threading
 import time
@@ -171,12 +172,48 @@ class TCPTransportClient(TransportClient):
             pass
 
 
+_STOP = object()
+
+
+class _ConnectionWriter:
+    """Sends one connection's outgoing messages, in order, on a dedicated thread.
+
+    Writing a multi-megabyte parameter delta over a high-latency link takes seconds.
+    Doing it on the parameter server's polling thread would serialize every
+    worker's download behind the slowest one; a writer per connection lets the
+    downloads overlap and keeps the server applying pushes meanwhile.
+    """
+
+    def __init__(self, conn: Connection, peer: Any) -> None:
+        self._conn = conn
+        self._peer = peer
+        self._queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def send(self, message: Any) -> None:
+        self._queue.put(message)
+
+    def close(self) -> None:
+        self._queue.put(_STOP)
+
+    def _run(self) -> None:
+        while (message := self._queue.get()) is not _STOP:
+            try:
+                self._conn.send_bytes(encode_message(message))
+            except Exception as exc:
+                logger.warning("send to %s failed: %s", self._peer, exc)
+                return
+
+
 class TCPTransportServer(TransportServer):
     """Network TCP server listening for worker connections.
 
     The accept loop only accepts sockets; each connection authenticates on its own
     thread, so a failed or stalled handshake (wrong key, port scanner) never blocks
-    or stops other workers from connecting.
+    or stops other workers from connecting. Replies are queued to a per-connection
+    writer thread, so ``send_*`` calls return immediately and downloads to
+    different workers proceed in parallel.
     """
 
     def __init__(self, address: tuple[str, int], authkey: bytes | str | None = None) -> None:
@@ -225,6 +262,7 @@ class TCPTransportServer(TransportServer):
         if conn is None:
             return
         logger.info("authenticated connection from %s", peer)
+        writer = _ConnectionWriter(conn, peer)
         worker_ids: set[str] = set()
         while self.running:
             try:
@@ -238,17 +276,18 @@ class TCPTransportServer(TransportServer):
             with self._lock:
                 if payload.worker_id not in self._connections:
                     logger.info("worker %s joined from %s", payload.worker_id, peer)
-                self._connections[payload.worker_id] = conn
+                self._connections[payload.worker_id] = writer
                 worker_ids.add(payload.worker_id)
-                queue = self._push_queue if msg_type == "push" else self._fetch_queue
-                queue.append((conn, payload))
-        self._drop_connection(conn, worker_ids, peer)
+                pending = self._push_queue if msg_type == "push" else self._fetch_queue
+                pending.append((conn, payload))
+        writer.close()
+        self._drop_connection(conn, writer, worker_ids, peer)
 
-    def _drop_connection(self, conn: Any, worker_ids: set[str], peer: Any) -> None:
+    def _drop_connection(self, conn: Any, writer: _ConnectionWriter, worker_ids: set[str], peer: Any) -> None:
         with self._lock:
             for worker_id in worker_ids:
                 # A reconnecting worker may already own a newer connection
-                if self._connections.get(worker_id) is conn:
+                if self._connections.get(worker_id) is writer:
                     del self._connections[worker_id]
                     logger.info("worker %s disconnected (%s)", worker_id, peer)
         try:
@@ -278,12 +317,9 @@ class TCPTransportServer(TransportServer):
 
     def _send(self, worker_id: str, message: Any) -> None:
         with self._lock:
-            conn = self._connections.get(worker_id)
-        if conn is not None:
-            try:
-                conn.send_bytes(encode_message(message))
-            except Exception as exc:
-                logger.warning("send to worker %s failed: %s", worker_id, exc)
+            writer = self._connections.get(worker_id)
+        if writer is not None:
+            writer.send(message)
 
     def close(self) -> None:
         self.running = False

@@ -160,3 +160,49 @@ def test_wire_format_carries_tensor_data_by_value():
     from multiprocessing.reduction import ForkingPickler
 
     assert b"torch.multiprocessing" in bytes(ForkingPickler.dumps(resp))
+
+
+def test_slow_worker_download_does_not_block_other_workers():
+    """A worker that is slow to receive a large reply must not stall replies to others."""
+    import threading
+
+    from torch_asgc.transport.base import FetchResponse
+    from torch_asgc.transport.tcp import encode_message
+
+    port = _find_free_port()
+    address = ("127.0.0.1", port)
+    server = TCPTransportServer(address, authkey=b"k")
+    slow = TCPTransportClient(address, authkey=b"k", connect_timeout=5.0)
+    fast = TCPTransportClient(address, authkey=b"k", connect_timeout=5.0, reply_timeout=10.0)
+    try:
+        # The slow worker asks for parameters but never reads the reply
+        slow._conn.send_bytes(encode_message(("fetch", FetchRequest(worker_id="slow", known_version=-1))))
+        replies = []
+        fast_thread = threading.Thread(
+            target=lambda: replies.append(fast.fetch(FetchRequest(worker_id="fast", known_version=-1))),
+            daemon=True,
+        )
+        fast_thread.start()
+
+        seen = set()
+        for _ in range(250):
+            req = server.poll_fetch()
+            if req is not None:
+                seen.add(req.worker_id)
+            if seen == {"slow", "fast"}:
+                break
+            time.sleep(0.02)
+        assert seen == {"slow", "fast"}
+
+        def reply_in_server_order():
+            # 64 MB is far larger than the socket buffers, so a blocking send would stall here
+            server.send_fetch_response("slow", FetchResponse(version=1, params={"w": torch.zeros(16_000_000)}))
+            server.send_fetch_response("fast", FetchResponse(version=1))
+
+        threading.Thread(target=reply_in_server_order, daemon=True).start()
+        fast_thread.join(timeout=10.0)
+        assert replies and replies[0].version == 1, "fast worker was blocked behind the slow download"
+    finally:
+        slow.close()
+        fast.close()
+        server.close()
