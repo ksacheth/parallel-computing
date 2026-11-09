@@ -101,6 +101,12 @@ to continue from the last checkpoint (written every `--checkpoint-interval-s`, d
 4. Run all cells. The connectivity check prints the RTT to the server. The train cell streams
    worker logs and exits when the server ends the run.
 
+**Runtime choice.** `DEVICE = "auto"` picks a CUDA GPU, then a TPU (via `torch_xla`), then CPU.
+T4 GPUs make the best fast workers. A TPU works but waits on the network every step, because each
+step is a push plus a pull, and its first step spends time compiling. For the 55k-parameter
+Fashion-MNIST CNN, a TPU is often no faster than a CPU. If `torch_xla` or the TPU is unavailable,
+the worker falls back to CPU and logs a warning.
+
 The same worker runs anywhere outside Colab too:
 
 ```bash

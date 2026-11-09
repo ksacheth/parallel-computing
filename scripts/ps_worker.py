@@ -11,7 +11,9 @@ chooses local concerns: its data shard, batch size, device, and error feedback.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
+import os
 import socket
 import time
 import uuid
@@ -39,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-grad-norm", type=float, default=None)
     p.add_argument("--max-steps", type=int, default=0, help="stop after N pushes (0 = until server stops)")
     p.add_argument("--amp", action="store_true", help="fp16 autocast + GradScaler (CUDA only)")
-    p.add_argument("--device", default="auto")
+    p.add_argument("--device", default="auto", help="auto (cuda > TPU/xla > cpu), cuda, xla, or cpu")
     p.add_argument("--data-root", default="data")
     p.add_argument("--loader-workers", type=int, default=2)
     p.add_argument("--log-every", type=int, default=20)
@@ -48,12 +50,52 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def xla_device() -> torch.device | None:
+    """The TPU as a torch_xla device, or None when torch_xla or the TPU is unavailable."""
+    if importlib.util.find_spec("torch_xla") is None:
+        return None
+    os.environ.setdefault("PJRT_DEVICE", "TPU")
+    try:
+        import torch_xla
+
+        if hasattr(torch_xla, "device"):
+            device = torch_xla.device()
+        else:  # torch_xla < 2.4
+            import torch_xla.core.xla_model as xm
+
+            device = xm.xla_device()
+        (torch.ones(2, device=device) + 1).cpu()  # probe: fails fast if no TPU is attached
+        return device
+    except Exception as exc:
+        log.warning("TPU (XLA) unavailable: %s", exc)
+        return None
+
+
 def pick_device(name: str) -> torch.device:
-    if name != "auto":
-        return torch.device(name)
-    if torch.cuda.is_available():
+    if name == "auto" and torch.cuda.is_available():
         return torch.device("cuda")
-    return torch.device("cpu")
+    if name in ("auto", "xla"):
+        device = xla_device()
+        if device is not None:
+            return device
+        if name == "xla":
+            log.warning("--device xla requested but no TPU found; falling back to CPU")
+        return torch.device("cpu")
+    return torch.device(name)
+
+
+def flush_lazy_device(device: torch.device) -> None:
+    """XLA records ops lazily; cut the graph once per step so it compiles once and stays cached."""
+    if device.type != "xla":
+        return
+    import torch_xla
+
+    if hasattr(torch_xla, "sync"):
+        torch_xla.sync()
+    else:  # torch_xla < 2.4
+        import torch_xla.core.xla_model as xm
+
+        xm.mark_step()
 
 
 def batches(loader):
@@ -103,14 +145,17 @@ class Worker:
         self.optimizer.zero_grad()
         with self.autocast():
             loss = nn.functional.cross_entropy(self.model(x), y)
-        loss_val = float(loss.detach())
+        # Read the loss after backward so XLA runs forward + backward as one graph
         if self.scaler.is_enabled():
             self.scaler.scale(loss).backward()
+            loss_val = float(loss.detach())
             self.optimizer.step(loss_val=loss_val, scaler=self.scaler)
             self.scaler.update()
         else:
             loss.backward()
+            loss_val = float(loss.detach())
             self.optimizer.step(loss_val=loss_val)
+        flush_lazy_device(self.device)
         return loss_val
 
     def run(self) -> None:
