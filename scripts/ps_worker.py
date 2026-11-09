@@ -112,7 +112,7 @@ class Worker:
             reply_timeout=args.reply_timeout_s,
         )
         self.net = make_model(self.task).to(self.device)
-        first = self.client.sync_model(self.net)  # pull authoritative weights before the first step
+        first = self.join_server(args.task)
         if first.compression_mode is None:
             raise SystemExit("server did not report its compression mode; update torch_asgc on the server")
         compression = CompressionConfig(mode=first.compression_mode).with_strength(first.compression_setting)
@@ -131,6 +131,20 @@ class Worker:
         use_amp = args.amp and self.device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
         self.autocast = lambda: torch.autocast("cuda", dtype=torch.float16, enabled=use_amp)
+
+    def join_server(self, task_name: str):
+        """Pull the authoritative weights; a key mismatch means the server runs another task."""
+        try:
+            return self.client.sync_model(self.net)
+        except RuntimeError as exc:
+            if "state_dict" not in str(exc):
+                raise
+            self.client.close()
+            raise SystemExit(
+                f"The server is running a different model than --task {task_name}. "
+                "Set TASK to the server's task (see ASGC_SERVER_ARGS in ~/asgc/ps.env on the server), "
+                "or wait for the server to start the new run."
+            ) from None
 
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
         x = x.to(self.device, non_blocking=True)
