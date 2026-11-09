@@ -35,8 +35,9 @@ Consult [`CONTEXT.md`](CONTEXT.md) for the authoritative domain model, canonical
 - Python 3.11+ with PyTorch (CPU sufficient; CUDA auto-detected when available).
 - Install dependencies: `pip install -r requirements.txt`.
 - Install public library in editable mode: `pip install -e .`.
-- **Fast Unit Tests (Library):** `python -m pytest tests/test_torch_asgc -q` (29 tests covering TCP transport, AMP, bucketing, compression, and plugins; ~30–45 s. The Hugging Face integration test requires both `transformers` and `accelerate`).
+- **Fast Unit Tests (Library):** `python -m pytest tests/test_torch_asgc -q` (33 tests covering TCP transport, AMP, bucketing, compression, and plugins; ~30–45 s. The Hugging Face integration test requires both `transformers` and `accelerate`).
 - **Full Verification Suite:** `python -m pytest tests/ -q` (all unit and end-to-end integration training runs).
+- **Multi-Machine Run (cloud server + Colab workers):** `python scripts/ps_server.py --task fmnist` on the server, `python scripts/ps_worker.py --server tcp://<ip>:29500 --rank N --num-shards W` per worker, both with the same `ASGC_AUTHKEY`. See `docs/distributed_deployment.md`.
 - **Smoke Benchmark Run:** `python scripts/run_experiment.py --config configs/smoke_fmnist.yaml`.
 - **Fashion-MNIST Headline Matrix:** `python scripts/run_matrix.py --matrix configs/matrix_fmnist_headline.yaml`.
 - **Evaluation Matrix (CIFAR-10):** `python scripts/run_matrix.py --matrix configs/matrix_cifar_full.yaml`.

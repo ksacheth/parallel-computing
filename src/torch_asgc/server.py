@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
@@ -38,10 +39,16 @@ class ParameterServer:
         adaptive_config: AdaptiveConfig | None = None,
         bucket_cap_mb: float = 25.0,
         compression: CompressionConfig | None = None,
+        authkey: bytes | str | None = None,
+        on_push: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.model = model
         self.version = 0
         self.running = True
+        # When set, every fetch response carries stop=True so workers can exit cleanly
+        self.stop_training = False
+        # Optional per-push telemetry sink (e.g. a JSONL event logger)
+        self.on_push = on_push
 
         # Initialize transport
         if isinstance(transport, LocalTransportHub):
@@ -52,7 +59,7 @@ class ParameterServer:
             self.transport = LocalTransportServer(bind_address)
         elif bind_address is not None:
             host, port = parse_tcp_address(bind_address)
-            self.transport = TCPTransportServer((host, port))
+            self.transport = TCPTransportServer((host, port), authkey=authkey)
         else:
             raise ValueError("must provide transport or valid bind_address")
 
@@ -179,6 +186,8 @@ class ParameterServer:
                     resp = self._make_snapshot_response()
             else:
                 resp = self._make_snapshot_response()
+            resp.stop = self.stop_training
+            resp.compression_mode = self.compression_mode
             self.transport.send_fetch_response(fetch_req.worker_id, resp)
 
         # 2. Handle Push updates
@@ -254,6 +263,19 @@ class ParameterServer:
                 s_max=self.staleness_config.s_max,
             )
             self.transport.send_push_ack(push_up.worker_id, ack)
+            if self.on_push is not None:
+                self.on_push({
+                    "worker_id": push_up.worker_id,
+                    "worker_version": push_up.version,
+                    "server_version": self.version,
+                    "staleness": tau,
+                    "decision": decision.kind,
+                    "weight": decision.weight,
+                    "bytes": push_up.total_bytes,
+                    "loss": push_up.loss_val,
+                    "compression_setting": self.current_strength,
+                    "s_max": self.staleness_config.s_max,
+                })
 
         return worked
 

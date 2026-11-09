@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,7 @@ class ASGCClient:
         self.transport = transport
         self.worker_id = worker_id if worker_id is not None else str(uuid.uuid4())[:8]
         self.known_version = -1
+        self.stop_requested = False
 
     def fetch_parameters(self) -> FetchResponse:
         """Request the latest model parameters or delta from the server."""
@@ -34,6 +36,7 @@ class ASGCClient:
         resp = self.transport.fetch(req)
         if resp.version >= 0:
             self.known_version = resp.version
+        self.stop_requested = self.stop_requested or resp.stop
         return resp
 
     def sync_model(self, model: nn.Module) -> FetchResponse:
@@ -84,13 +87,19 @@ class ASGCClient:
 def connect(
     address: str | tuple[str, int] | LocalTransportHub,
     worker_id: str | None = None,
-    authkey: bytes = b"torch_asgc",
+    authkey: bytes | str | None = None,
+    **tcp_options: Any,
 ) -> ASGCClient:
-    """Convenience helper to initialize and connect an ASGCClient."""
+    """Convenience helper to initialize and connect an ASGCClient.
+
+    ``authkey`` falls back to the ``ASGC_AUTHKEY`` environment variable, then to the
+    library default. ``tcp_options`` (``connect_timeout``, ``connect_retries``,
+    ``retry_delay``, ``reply_timeout``) are forwarded to ``TCPTransportClient``.
+    """
     resolved_id = worker_id if worker_id is not None else str(uuid.uuid4())[:8]
     if isinstance(address, LocalTransportHub):
         client_transport = LocalTransportClient(address, worker_id=resolved_id)
         return ASGCClient(client_transport, worker_id=resolved_id)
 
     host, port = parse_tcp_address(address)
-    return ASGCClient(TCPTransportClient((host, port), authkey=authkey), worker_id=resolved_id)
+    return ASGCClient(TCPTransportClient((host, port), authkey=authkey, **tcp_options), worker_id=resolved_id)
