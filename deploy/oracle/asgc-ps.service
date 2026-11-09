@@ -1,0 +1,21 @@
+[Unit]
+Description=ASGC parameter server (torch_asgc over TCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/asgc/repo
+EnvironmentFile=/home/ubuntu/asgc/ps.env
+Environment=PYTHONUNBUFFERED=1
+# $ASGC_SERVER_ARGS (unbraced) is word-split into separate arguments by systemd
+ExecStart=/home/ubuntu/asgc/venv/bin/python scripts/ps_server.py --results-dir /home/ubuntu/asgc/results --data-root /home/ubuntu/asgc/data $ASGC_SERVER_ARGS
+# A finished run exits 0 and stays stopped; crashes restart (add --resume to continue)
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -15,7 +15,7 @@ It addresses both by jointly orchestrating **gradient compression with error fee
 
 This repository contains two complementary codebases:
 
-- **`src/torch_asgc/` — the public library.** A decoupled PyTorch distributed training library (`DistributedModel`, `DistributedOptimizer`, `ParameterServer`) with real TCP transport, AMP, gradient bucketing, downlink delta broadcasting, local gradient accumulation, and plugins for PyTorch Lightning and Hugging Face. 29 unit tests cover these paths; the Hugging Face integration test also needs `accelerate`.
+- **`src/torch_asgc/` — the public library.** A decoupled PyTorch distributed training library (`DistributedModel`, `DistributedOptimizer`, `ParameterServer`) with real TCP transport, AMP, gradient bucketing, downlink delta broadcasting, local gradient accumulation, and plugins for PyTorch Lightning and Hugging Face. 33 unit tests cover these paths; the Hugging Face integration test also needs `accelerate`.
 - **`src/asgc/` — the research simulation harness.** A deterministic multiprocess parameter-server simulation that injects worker delays and bandwidth limits, used to produce all empirical findings. See [`findings_for_report.md`](findings_for_report.md).
 
 > **Hardware note.** Everything in this repository runs on CPU. The public-library tests and the **Fashion-MNIST** simulation (a 55k-parameter CNN) are comfortable on a laptop with no GPU. The **CIFAR-10 ResNet-18** experiments are compute-heavy and were run on a GPU; on a CPU-only machine, prefer the Fashion-MNIST configs below.
@@ -237,6 +237,10 @@ for x, y in dataloader:
     scaler.update()
 ```
 
+### 5. Multi-machine deployment (cloud server + Colab workers)
+
+`scripts/ps_server.py` and `scripts/ps_worker.py` run the library across real machines: a parameter server on a cloud VM and workers in separate Colab sessions, each connecting over the internet with an HMAC-authenticated key (`ASGC_AUTHKEY`). See [`docs/distributed_deployment.md`](docs/distributed_deployment.md) for VM setup (systemd unit included), firewall rules, and the `notebooks/colab_remote_worker.ipynb` worker notebook.
+
 ---
 
 ## 🔬 Research Simulation Benchmark Suite
@@ -246,7 +250,7 @@ The `src/asgc/` harness reproduces all findings and figures. Workers run as sepa
 ### Running tests
 
 ```bash
-# Fast public-library suite (29 tests, ~30-45 s, CPU; HF test also needs accelerate)
+# Fast public-library suite (33 tests, ~30-45 s, CPU; HF test also needs accelerate)
 python -m pytest tests/test_torch_asgc -q
 
 # Full suite (library + research-simulation gates, including end-to-end runs)
