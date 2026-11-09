@@ -83,6 +83,8 @@ Useful presets:
 | Fashion-MNIST, adaptive controller | `--task fmnist --compression topk --rho 0.1 --adaptive --eval-interval-s 30 --max-wall-time-s 1800` |
 | Uncompressed async baseline | `--task fmnist --compression identity --eval-interval-s 30 --max-wall-time-s 1800` |
 | CIFAR-10 ResNet-18 | `--task cifar10 --compression topk --rho 0.1 --eval-interval-s 120 --eval-samples 2000 --max-wall-time-s 3600` |
+| Transformer, char-level GPT on Tiny Shakespeare (10.7M params) | `--task gpt --compression topk --rho 0.1 --eval-interval-s 60 --eval-samples 64 --max-wall-time-s 3600` |
+| Small transformer from the notebooks (1.8M params) | `--task gpt-mini --compression topk --rho 0.2 --eval-interval-s 30 --eval-samples 128 --max-wall-time-s 1800` |
 
 On a 2-core ARM VM, a ResNet-18 eval over the full 10k test set takes about a minute and competes
 with the update loop for CPU. Use `--eval-samples 2000` for periodic evals. The final eval at the
@@ -124,6 +126,12 @@ scp -r oracle-arm:/home/ubuntu/asgc/results/distributed/<run> results/distribute
 total versions, accept/downweight/reject counts, uplink bytes, and the final accuracy.
 
 ## Performance notes
+
+- **The step time is set by round-trip latency, not compute.** In a measured run with 3 Colab T4 workers
+  in the US and the server in Oracle ap-hyderabad-1, the Fashion-MNIST CNN ran at about 1 step/s per
+  worker (3.2 updates/s in total) with the server nearly idle. Two intercontinental round trips per step
+  took about 1 s, while the GPU compute took milliseconds. A larger model (`--task gpt`) or
+  `--local-steps 4` (averaging 4 batches per push) puts the GPU to work without adding round trips.
 
 - Each worker step costs two round trips (push + ack, fetch + delta). For the 55k-parameter SmallCNN,
   latency dominates. For ResNet-18 (11.2M parameters), each step moves about 9 MB up (Top-K at

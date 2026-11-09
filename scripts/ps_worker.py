@@ -19,9 +19,8 @@ import time
 import uuid
 
 import torch
-import torch.nn as nn
 
-from remote_tasks import get_task, make_model, train_loader
+from remote_tasks import get_task, make_model, task_loss, train_batches
 from torch_asgc import CompressionConfig, DistributedModel, DistributedOptimizer, connect
 
 log = logging.getLogger("asgc.worker")
@@ -38,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--no-error-feedback", action="store_true")
     p.add_argument("--local-steps", type=int, default=1, help="micro-batches averaged per push")
-    p.add_argument("--max-grad-norm", type=float, default=None)
+    p.add_argument("--max-grad-norm", type=float, default=None, help="default: task default")
     p.add_argument("--max-steps", type=int, default=0, help="stop after N pushes (0 = until server stops)")
     p.add_argument("--amp", action="store_true", help="fp16 autocast + GradScaler (CUDA only)")
     p.add_argument("--device", default="auto", help="auto (cuda > TPU/xla > cpu), cuda, xla, or cpu")
@@ -98,12 +97,6 @@ def flush_lazy_device(device: torch.device) -> None:
         xm.mark_step()
 
 
-def batches(loader):
-    """Endless stream over the shard; reshuffles every pass."""
-    while True:
-        yield from loader
-
-
 class Worker:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -133,7 +126,7 @@ class Worker:
             compression=compression,
             error_feedback=not args.no_error_feedback,
             local_steps=args.local_steps,
-            max_grad_norm=args.max_grad_norm,
+            max_grad_norm=args.max_grad_norm if args.max_grad_norm is not None else self.task.max_grad_norm,
         )
         use_amp = args.amp and self.device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -144,7 +137,7 @@ class Worker:
         y = y.to(self.device, non_blocking=True)
         self.optimizer.zero_grad()
         with self.autocast():
-            loss = nn.functional.cross_entropy(self.model(x), y)
+            loss = task_loss(self.model(x), y)
         # Read the loss after backward so XLA runs forward + backward as one graph
         if self.scaler.is_enabled():
             self.scaler.scale(loss).backward()
@@ -160,14 +153,14 @@ class Worker:
 
     def run(self) -> None:
         args = self.args
-        loader = train_loader(
-            self.task, args.data_root, args.rank, args.num_shards,
+        stream, description = train_batches(
+            self.task, args.data_root, (args.rank, args.num_shards),
             args.batch_size or self.task.batch_size, args.loader_workers,
         )
-        log.info("shard %d/%d: %d batches per pass", args.rank, args.num_shards, len(loader))
+        log.info(description)
         self.net.train()
         step, start, window_start, loss_sum = 0, time.time(), time.time(), 0.0
-        for x, y in batches(loader):
+        for x, y in stream:
             if self.client.stop_requested:
                 log.info("server requested stop")
                 break

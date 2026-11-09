@@ -31,7 +31,7 @@ log = logging.getLogger("asgc.ps")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ASGC parameter server for multi-machine training.")
-    p.add_argument("--task", default="fmnist", help="fmnist (SmallCNN) or cifar10 (ResNet-18)")
+    p.add_argument("--task", default="fmnist", help="fmnist (SmallCNN), cifar10 (ResNet-18), gpt (10.7M char GPT), or gpt-mini (1.8M)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=29500)
     p.add_argument("--authkey", default=None, help="shared secret (default: $ASGC_AUTHKEY)")
@@ -44,9 +44,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--s-low", type=int, default=2)
     p.add_argument("--s-max", type=int, default=10)
     p.add_argument("--beta", type=float, default=0.5)
-    p.add_argument("--lr", type=float, default=None, help="server SGD lr (default: task default)")
-    p.add_argument("--momentum", type=float, default=0.0)
-    p.add_argument("--weight-decay", type=float, default=0.0)
+    p.add_argument("--lr", type=float, default=None, help="server lr (default: task default)")
+    p.add_argument("--momentum", type=float, default=0.0, help="SGD tasks only")
+    p.add_argument("--weight-decay", type=float, default=None, help="default: task default")
     p.add_argument("--max-versions", type=int, default=0, help="stop after N applied updates (0 = no limit)")
     p.add_argument("--max-wall-time-s", type=float, default=0, help="stop N s after the first push (0 = no limit)")
     p.add_argument("--drain-s", type=float, default=30.0, help="keep serving after stop so workers see it")
@@ -86,7 +86,7 @@ class Evaluator:
 
     def __init__(self, model: torch.nn.Module, eval_set: tuple[torch.Tensor, torch.Tensor], bn_x, events: EventLog) -> None:
         self._model = copy.deepcopy(model)
-        (self._x, self._y), self._bn_x = eval_set, bn_x
+        self._eval_set, self._bn_x = eval_set, bn_x
         self._events = events
         self._thread: threading.Thread | None = None
         self.last: dict[str, float] | None = None
@@ -102,7 +102,7 @@ class Evaluator:
     def run(self, state: dict[str, torch.Tensor], version: int) -> None:
         start = time.perf_counter()
         self._model.load_state_dict(state)
-        acc, loss = evaluate(self._model, self._x, self._y, self._bn_x)
+        acc, loss = evaluate(self._model, self._eval_set, self._bn_x)
         self.last = {"version": version, "accuracy": acc, "loss": loss}
         self._events.write("eval", version=version, accuracy=acc, loss=loss,
                            eval_s=round(time.perf_counter() - start, 2))
@@ -138,12 +138,12 @@ class PushStats:
 
 def build_server(args: argparse.Namespace, model: torch.nn.Module, on_push) -> ParameterServer:
     task = get_task(args.task)
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=args.lr if args.lr is not None else task.lr,
-        momentum=args.momentum,
-        weight_decay=args.weight_decay,
-    )
+    lr = args.lr if args.lr is not None else task.lr
+    weight_decay = args.weight_decay if args.weight_decay is not None else task.weight_decay
+    if task.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.99), weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum, weight_decay=weight_decay)
     return ParameterServer(
         model=model,
         optimizer=optimizer,
