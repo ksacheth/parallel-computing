@@ -29,6 +29,35 @@ from torch_asgc.transport.tcp import DEFAULT_AUTHKEY, resolve_authkey
 log = logging.getLogger("asgc.ps")
 
 
+# Controller limits. "transformer" reproduces the tuned settings of the transformer
+# notebooks (findings F16/F17): rho in [0.10, 0.20], S_max in [6, 12], 2 s interval.
+ADAPTIVE_PRESETS: dict[str, dict] = {
+    "default": {"interval_s": 10.0},
+    "transformer": {
+        "interval_s": 2.0,
+        "mode": "threshold",
+        "rho_bounds": (0.10, 0.20),
+        "max_delta_rho": 0.05,
+        "s_max_bounds": (6, 12),
+        "max_delta_s_max": 1,
+        "worsen_tol": 0.05,
+        "variability_tol": 0.05,
+        "reject_frac_max": 0.25,
+        "comm_pressure_min": 200_000.0,
+        "instability_persistence": 2,
+    },
+}
+
+
+def adaptive_config(args: argparse.Namespace) -> AdaptiveConfig | None:
+    if not args.adaptive:
+        return None
+    settings = dict(ADAPTIVE_PRESETS[args.adaptive_preset])
+    if args.control_interval_s is not None:
+        settings["interval_s"] = args.control_interval_s
+    return AdaptiveConfig(**settings)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ASGC parameter server for multi-machine training.")
     p.add_argument("--task", default="fmnist", help="fmnist (SmallCNN), cifar10 (ResNet-18), gpt (10.7M char GPT), or gpt-mini (1.8M)")
@@ -39,7 +68,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rho", type=float, default=0.1, help="Top-K active fraction")
     p.add_argument("--bits", type=int, default=8, help="QSGD bits")
     p.add_argument("--adaptive", action="store_true", help="enable the adaptive controller")
-    p.add_argument("--control-interval-s", type=float, default=10.0)
+    p.add_argument("--control-interval-s", type=float, default=None, help="default: preset value")
+    p.add_argument("--adaptive-preset", default="default", choices=sorted(ADAPTIVE_PRESETS),
+                   help="controller limits; 'transformer' = tuned settings behind finding F16")
     p.add_argument("--no-staleness", action="store_true", help="accept every update at full weight")
     p.add_argument("--s-low", type=int, default=2)
     p.add_argument("--s-max", type=int, default=10)
@@ -153,7 +184,7 @@ def build_server(args: argparse.Namespace, model: torch.nn.Module, on_push) -> P
             enabled=not args.no_staleness, s_low=args.s_low, s_max=args.s_max, beta=args.beta
         ),
         compression=CompressionConfig(mode=args.compression, rho=args.rho, bits=args.bits),
-        adaptive_config=AdaptiveConfig(interval_s=args.control_interval_s) if args.adaptive else None,
+        adaptive_config=adaptive_config(args),
         on_push=on_push,
     )
 
